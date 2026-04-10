@@ -136,16 +136,27 @@ def main():
     # ── Open camera / video ──
     source = int(args.source) if args.source.isdigit() else args.source
 
-    # Try multiple camera indices with DirectShow on Windows
+    # Try multiple camera indices — use platform-appropriate backend
+    import platform
     cap = None
     if isinstance(source, int):
+        backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_V4L2
         for idx in [source] + [i for i in range(5) if i != source]:
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(idx, backend)
             if cap.isOpened():
                 print(f"[INIT] Camera opened on index {idx}")
                 break
             cap.release()
             cap = None
+        # Fallback: try default backend if V4L2 failed
+        if cap is None and platform.system() != "Windows":
+            for idx in [source] + [i for i in range(5) if i != source]:
+                cap = cv2.VideoCapture(idx)
+                if cap.isOpened():
+                    print(f"[INIT] Camera opened on index {idx} (default backend)")
+                    break
+                cap.release()
+                cap = None
     else:
         cap = cv2.VideoCapture(source)
 

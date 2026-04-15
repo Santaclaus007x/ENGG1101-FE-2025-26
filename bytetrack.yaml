@@ -12,3 +12,4 @@ track_low_thresh:  0.1   # confidence needed for secondary association
 new_track_thresh:  0.6   # confidence needed to start a new track
 track_buffer:      90    # ← increased from 30 — survives ~3 s of occlusion
 match_thresh:      0.8   # IoU threshold for matching existing tracks
+fuse_score:        False # fuse detection scores with IoU for association

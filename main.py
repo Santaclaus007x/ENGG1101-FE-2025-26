@@ -284,6 +284,8 @@ def main():
 
         current_track_ids = set()
         wave_count = 0
+        any_fall_active = False
+        any_wave_active = False
 
         if has_boxes and has_ids:
             boxes = result.boxes.xyxy.cpu().numpy().astype(int)   # (N, 4)
@@ -320,8 +322,11 @@ def main():
                 if alert is not None:
                     active_alerts[tid] = (alert, now + 3.0)
                     _log_alert(alert, tid)
-                    if buzzer:
-                        buzzer.beep_fall()
+
+                # Continuous fall state — beep while person is actually falling
+                metrics = detector.get_latest_metrics()
+                if metrics.get('aspect_ratio', 1.5) < metrics.get('threshold', 0.7):
+                    any_fall_active = True
 
                 # ────────────────────────────
                 # WAVE DETECTION (keypoints)
@@ -339,8 +344,6 @@ def main():
                         if confirmed and not wave_confirmed.get(tid, False):
                             wave_confirmed[tid] = True
                             _log_wave(tid, duration)
-                            if buzzer:
-                                buzzer.beep_wave()
                         wave_info = {
                             "is_waving": True,
                             "duration": duration,
@@ -348,6 +351,7 @@ def main():
                         }
                         if confirmed:
                             wave_count += 1
+                            any_wave_active = True
                     else:
                         wave_start_times[tid] = None
                         wave_confirmed[tid] = False
@@ -369,6 +373,15 @@ def main():
 
                 draw_fall_overlay(frame, metrics, current_alert, tid,
                                   wave_info=wave_info)
+
+        # ── Buzzer: continuous beep while condition is active ──
+        if buzzer:
+            if any_fall_active:
+                buzzer.start_fall_beep()
+            elif any_wave_active:
+                buzzer.start_wave_beep()
+            else:
+                buzzer.stop()
 
         # ── Cleanup stale trackers (not seen for 5s) ──
         stale = [tid for tid, t in last_seen.items() if now - t > 5.0]

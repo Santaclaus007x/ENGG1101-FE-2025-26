@@ -42,6 +42,7 @@ except ImportError:
 
 from fall_detector import FallDetector, FallDetectorConfig, FallAlert
 from visualizer import draw_fall_overlay, draw_env_object
+from buzzer import Buzzer
 
 
 # ──────────────────────────────────────
@@ -85,6 +86,10 @@ def parse_args():
                    help="Show the environmental visual (pose skeleton and keypoints) on the video feed.")
     p.add_argument("--no-show", action="store_true",
                    help="Disable display window (headless mode)")
+    p.add_argument("--buzzer-pin", type=int, default=17,
+                   help="BCM GPIO pin for the buzzer (default: 17)")
+    p.add_argument("--no-buzzer", action="store_true",
+                   help="Disable buzzer output")
     return p.parse_args()
 
 
@@ -183,6 +188,9 @@ def main():
         writer = cv2.VideoWriter(args.output, fourcc, cam_fps,
                                  (frame_w, frame_h))
         print(f"[INIT] Recording to: {args.output}")
+
+    # ── Buzzer ──
+    buzzer = None if args.no_buzzer else Buzzer(pin=args.buzzer_pin)
 
     # ── Fall detector config ──
     config = FallDetectorConfig(
@@ -312,6 +320,8 @@ def main():
                 if alert is not None:
                     active_alerts[tid] = (alert, now + 3.0)
                     _log_alert(alert, tid)
+                    if buzzer:
+                        buzzer.beep_fall()
 
                 # ────────────────────────────
                 # WAVE DETECTION (keypoints)
@@ -329,6 +339,8 @@ def main():
                         if confirmed and not wave_confirmed.get(tid, False):
                             wave_confirmed[tid] = True
                             _log_wave(tid, duration)
+                            if buzzer:
+                                buzzer.beep_wave()
                         wave_info = {
                             "is_waving": True,
                             "duration": duration,
@@ -387,6 +399,8 @@ def main():
     if writer:
         writer.release()
     cv2.destroyAllWindows()
+    if buzzer:
+        buzzer.cleanup()
     print("[INFO] Done.")
 
 

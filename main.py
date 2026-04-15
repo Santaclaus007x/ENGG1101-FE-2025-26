@@ -100,10 +100,16 @@ def parse_args():
                    help="Serial port for STS3215 servos (default: /dev/ttyUSB0)")
     p.add_argument("--no-servo", action="store_true",
                    help="Disable pan/tilt servo tracking")
-    p.add_argument("--servo-kp", type=float, default=0.3,
-                   help="Servo P-gain (default: 0.3 — increase for faster tracking)")
-    p.add_argument("--servo-deadband", type=int, default=30,
-                   help="Deadband in pixels before servos move (default: 30)")
+    p.add_argument("--servo-kp", type=float, default=0.5,
+                   help="Servo P-gain — fraction of angle error to correct per frame (default: 0.5)")
+    p.add_argument("--servo-deadband", type=int, default=20,
+                   help="Deadband radius in pixels before servos move (default: 20)")
+    p.add_argument("--servo-alpha", type=float, default=0.35,
+                   help="EMA smoothing factor 0–1, higher=snappier (default: 0.35)")
+    p.add_argument("--cam-hfov", type=float, default=60.0,
+                   help="Camera horizontal field of view in degrees (default: 60)")
+    p.add_argument("--cam-vfov", type=float, default=40.0,
+                   help="Camera vertical field of view in degrees (default: 40)")
     return p.parse_args()
 
 
@@ -214,6 +220,9 @@ def main():
                 port=args.servo_port,
                 Kp=args.servo_kp,
                 deadband_px=args.servo_deadband,
+                smooth_alpha=args.servo_alpha,
+                cam_hfov=args.cam_hfov,
+                cam_vfov=args.cam_vfov,
             )
         except Exception as e:
             print(f"[WARN] Servo tracker disabled: {e}")
@@ -235,8 +244,13 @@ def main():
     # ── Per-person wave state ──
     wave_start_times: Dict[int, float | None] = {}   # when wrist first raised
     wave_confirmed: Dict[int, bool] = {}              # True once threshold met
+    wave_confirm_times: Dict[int, float] = {}         # timestamp of latest confirmation
 
     wave_threshold = args.wave_seconds  # seconds required
+
+    # ── Servo target — sticky: tracks the most-recently-waving person ──
+    servo_target_tid: int | None = None
+    servo_target_wave_time: float = 0.0
 
     # ── FPS measurement ──
     frame_count = 0
@@ -315,7 +329,7 @@ def main():
         wave_count = 0
         any_fall_active = False
         any_wave_active = False
-        tracking_candidates = []   # (priority, cx, cy) — lower priority = preferred
+        person_positions: Dict[int, tuple] = {}   # tid → (cx, cy) this frame
 
         if has_boxes and has_ids:
             boxes = result.boxes.xyxy.cpu().numpy().astype(int)   # (N, 4)
@@ -339,16 +353,10 @@ def main():
                     draw_env_object(frame, tuple(box), label)
                     continue
 
-                # ── Servo tracking candidate ──
+                # ── Record centre position for servo target lookup ──
                 cx = (box[0] + box[2]) // 2
                 cy = (box[1] + box[3]) // 2
-                # Priority: 0=waving (highest), 1=falling, 2=normal
-                _prio = 2
-                if wave_confirmed.get(tid, False):
-                    _prio = 0
-                elif tid in active_alerts:
-                    _prio = 1
-                tracking_candidates.append((_prio, cx, cy))
+                person_positions[tid] = (cx, cy)
 
                 # ────────────────────────────
                 # FALL DETECTION (bounding box for PERSON)
@@ -384,7 +392,13 @@ def main():
                         confirmed = duration >= wave_threshold
                         if confirmed and not wave_confirmed.get(tid, False):
                             wave_confirmed[tid] = True
+                            wave_confirm_times[tid] = now
                             _log_wave(tid, duration)
+                            # Switch servo target if this wave is more recent
+                            if now >= servo_target_wave_time:
+                                servo_target_tid = tid
+                                servo_target_wave_time = now
+                                print(f"[SERVO] New target: Person #{tid}")
                         wave_info = {
                             "is_waving": True,
                             "duration": duration,
@@ -415,11 +429,30 @@ def main():
                 draw_fall_overlay(frame, metrics, current_alert, tid,
                                   wave_info=wave_info)
 
-        # ── Servo: steer toward highest-priority target ──
-        if tracker and tracking_candidates:
-            tracking_candidates.sort(key=lambda x: x[0])
-            _, target_cx, target_cy = tracking_candidates[0]
-            tracker.update(target_cx, target_cy, frame_w, frame_h)
+                # ── Servo target marker ──
+                if tid == servo_target_tid:
+                    _draw_servo_target(frame, cx, cy)
+
+        # ── Servo: track latest waving person (sticky) ──────────────────
+        if tracker and person_positions:
+            # If current target left the frame, clear it
+            if servo_target_tid not in current_track_ids:
+                if servo_target_tid is not None:
+                    print(f"[SERVO] Target #{servo_target_tid} left frame — released")
+                servo_target_tid = None
+                # Fall back to whoever waved most recently and is still here
+                active_wavers = [
+                    (t, wave_confirm_times[t])
+                    for t in current_track_ids
+                    if wave_confirmed.get(t, False) and t in wave_confirm_times
+                ]
+                if active_wavers:
+                    servo_target_tid = max(active_wavers, key=lambda x: x[1])[0]
+                    servo_target_wave_time = wave_confirm_times[servo_target_tid]
+
+            if servo_target_tid in person_positions:
+                tcx, tcy = person_positions[servo_target_tid]
+                tracker.update(tcx, tcy, frame_w, frame_h)
 
         # ── Buzzer: continuous beep while condition is active ──
         if buzzer:
@@ -438,6 +471,7 @@ def main():
             active_alerts.pop(tid, None)
             wave_start_times.pop(tid, None)
             wave_confirmed.pop(tid, None)
+            wave_confirm_times.pop(tid, None)
 
         # ── Draw status bar ──
         _draw_status_bar(frame, display_fps, len(current_track_ids),
@@ -489,6 +523,17 @@ def _log_alert(alert: FallAlert, person_id: int):
     print(f"[{ts}] !! FALL DETECTED !!  Person #{person_id}  "
           f"H/W={alert.aspect_ratio:.2f}  "
           f"bbox={alert.bbox}")
+
+
+def _draw_servo_target(frame, cx: int, cy: int):
+    """Yellow crosshair + ring to mark the person the servo is tracking."""
+    col = (0, 220, 255)   # yellow
+    r = 28
+    cv2.circle(frame, (cx, cy), r, col, 2, cv2.LINE_AA)
+    cv2.line(frame, (cx - r - 8, cy), (cx + r + 8, cy), col, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy - r - 8), (cx, cy + r + 8), col, 1, cv2.LINE_AA)
+    cv2.putText(frame, "TRACKING", (cx - 35, cy - r - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
 
 
 def _log_wave(person_id: int, duration: float):

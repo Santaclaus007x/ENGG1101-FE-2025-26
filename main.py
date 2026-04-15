@@ -98,6 +98,10 @@ def parse_args():
                    help="Disable buzzer output")
     p.add_argument("--servo-port", type=str, default="/dev/ttyUSB0",
                    help="Serial port for STS3215 servos (default: /dev/ttyUSB0)")
+    p.add_argument("--pan-id",  type=int, default=1,
+                   help="Servo ID for pan  axis (default: 1)")
+    p.add_argument("--tilt-id", type=int, default=4,
+                   help="Servo ID for tilt axis (default: 4)")
     p.add_argument("--no-servo", action="store_true",
                    help="Disable pan/tilt servo tracking")
     p.add_argument("--servo-kp", type=float, default=0.5,
@@ -218,6 +222,8 @@ def main():
         try:
             tracker = ServoTracker(
                 port=args.servo_port,
+                pan_id=args.pan_id,
+                tilt_id=args.tilt_id,
                 Kp=args.servo_kp,
                 deadband_px=args.servo_deadband,
                 smooth_alpha=args.servo_alpha,

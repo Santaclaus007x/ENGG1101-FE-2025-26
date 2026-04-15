@@ -285,10 +285,42 @@ if __name__ == "__main__":
     import argparse
 
     p = argparse.ArgumentParser(description="Servo tracker smoke-test")
-    p.add_argument("--port", default="/dev/ttyUSB0")
+    p.add_argument("--port",    default="/dev/ttyUSB0")
+    p.add_argument("--pan-id",  type=int, default=1,
+                   help="Servo ID for pan  axis (default: 1)")
+    p.add_argument("--tilt-id", type=int, default=4,
+                   help="Servo ID for tilt axis (default: 4)")
+    p.add_argument("--scan",    action="store_true",
+                   help="Scan IDs 1-7 and print which ones respond, then exit")
     args = p.parse_args()
 
-    t = ServoTracker(port=args.port)
+    # ── ID scanner ──────────────────────────────────────────────────────
+    if args.scan:
+        from scservo_sdk import PortHandler, sms_sts, COMM_SUCCESS
+        ph = PortHandler(args.port)
+        pk = sms_sts(ph)
+        ph.openPort()
+        ph.setBaudRate(115200)
+        print(f"Scanning IDs 1–7 on {args.port} …")
+        found = []
+        for sid in range(1, 8):
+            model, result, error = pk.ping(sid)
+            if result == COMM_SUCCESS:
+                print(f"  [ID {sid}] found  (model={model})")
+                found.append(sid)
+            else:
+                print(f"  [ID {sid}] no response")
+        ph.closePort()
+        if found:
+            print(f"\nFound servo IDs: {found}")
+            print(f"Run:  python servo_tracker.py --port {args.port} --pan-id {found[0]} --tilt-id {found[1] if len(found) > 1 else found[0]}")
+        else:
+            print("\nNo servos found — check wiring and power.")
+        raise SystemExit(0)
+
+    # ── Normal smoke-test ───────────────────────────────────────────────
+    print(f"Testing ServoTracker on {args.port}  pan={args.pan_id}  tilt={args.tilt_id} …")
+    t = ServoTracker(port=args.port, pan_id=args.pan_id, tilt_id=args.tilt_id)
     print("Centred. Waiting 2 s …")
     time.sleep(2)
     t.close()

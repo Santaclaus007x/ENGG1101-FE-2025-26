@@ -44,6 +44,12 @@ from fall_detector import FallDetector, FallDetectorConfig, FallAlert
 from visualizer import draw_fall_overlay, draw_env_object
 from buzzer import Buzzer
 
+try:
+    from servo_tracker import ServoTracker
+    _SERVO_AVAILABLE = True
+except ImportError:
+    _SERVO_AVAILABLE = False
+
 
 # ──────────────────────────────────────
 # COCO Keypoint indices + names
@@ -90,6 +96,14 @@ def parse_args():
                    help="BCM GPIO pin for the buzzer (default: 17)")
     p.add_argument("--no-buzzer", action="store_true",
                    help="Disable buzzer output")
+    p.add_argument("--servo-port", type=str, default="/dev/ttyUSB0",
+                   help="Serial port for STS3215 servos (default: /dev/ttyUSB0)")
+    p.add_argument("--no-servo", action="store_true",
+                   help="Disable pan/tilt servo tracking")
+    p.add_argument("--servo-kp", type=float, default=0.3,
+                   help="Servo P-gain (default: 0.3 — increase for faster tracking)")
+    p.add_argument("--servo-deadband", type=int, default=30,
+                   help="Deadband in pixels before servos move (default: 30)")
     return p.parse_args()
 
 
@@ -192,6 +206,21 @@ def main():
     # ── Buzzer ──
     buzzer = None if args.no_buzzer else Buzzer(pin=args.buzzer_pin)
 
+    # ── Servo tracker ──
+    tracker = None
+    if not args.no_servo and _SERVO_AVAILABLE:
+        try:
+            tracker = ServoTracker(
+                port=args.servo_port,
+                Kp=args.servo_kp,
+                deadband_px=args.servo_deadband,
+            )
+        except Exception as e:
+            print(f"[WARN] Servo tracker disabled: {e}")
+            tracker = None
+    elif not _SERVO_AVAILABLE:
+        print("[WARN] servo_tracker could not be imported — servo disabled")
+
     # ── Fall detector config ──
     config = FallDetectorConfig(
         aspect_ratio_threshold=args.aspect_ratio,
@@ -286,6 +315,7 @@ def main():
         wave_count = 0
         any_fall_active = False
         any_wave_active = False
+        tracking_candidates = []   # (priority, cx, cy) — lower priority = preferred
 
         if has_boxes and has_ids:
             boxes = result.boxes.xyxy.cpu().numpy().astype(int)   # (N, 4)
@@ -308,6 +338,17 @@ def main():
                     label = f"{names.get(cls, 'Object')} #{tid}"
                     draw_env_object(frame, tuple(box), label)
                     continue
+
+                # ── Servo tracking candidate ──
+                cx = (box[0] + box[2]) // 2
+                cy = (box[1] + box[3]) // 2
+                # Priority: 0=waving (highest), 1=falling, 2=normal
+                _prio = 2
+                if wave_confirmed.get(tid, False):
+                    _prio = 0
+                elif tid in active_alerts:
+                    _prio = 1
+                tracking_candidates.append((_prio, cx, cy))
 
                 # ────────────────────────────
                 # FALL DETECTION (bounding box for PERSON)
@@ -374,6 +415,12 @@ def main():
                 draw_fall_overlay(frame, metrics, current_alert, tid,
                                   wave_info=wave_info)
 
+        # ── Servo: steer toward highest-priority target ──
+        if tracker and tracking_candidates:
+            tracking_candidates.sort(key=lambda x: x[0])
+            _, target_cx, target_cy = tracking_candidates[0]
+            tracker.update(target_cx, target_cy, frame_w, frame_h)
+
         # ── Buzzer: continuous beep while condition is active ──
         if buzzer:
             if any_fall_active:
@@ -412,6 +459,8 @@ def main():
     if writer:
         writer.release()
     cv2.destroyAllWindows()
+    if tracker:
+        tracker.close()
     if buzzer:
         buzzer.cleanup()
     print("[INFO] Done.")

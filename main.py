@@ -25,6 +25,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import Dict
@@ -39,6 +40,9 @@ except ImportError:
     print("  Run:  pip install ultralytics opencv-python")
     print("=" * 50)
     sys.exit(1)
+
+# Custom ByteTrack config — lives next to this file
+_BYTETRACK_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bytetrack.yaml")
 
 from fall_detector import FallDetector, FallDetectorConfig, FallAlert
 from visualizer import draw_fall_overlay, draw_env_object
@@ -258,6 +262,12 @@ def main():
     servo_target_tid: int | None = None
     servo_target_wave_time: float = 0.0
 
+    # ── Occlusion handling (Plans A + B) ──
+    servo_last_cx:         int | None   = None   # last confirmed target centre X
+    servo_last_cy:         int | None   = None   # last confirmed target centre Y
+    servo_target_lost_time: float | None = None  # when target ID first disappeared
+    SERVO_HOLD_SECS = 1.5   # hold at last position before attempting recovery
+
     # ── FPS measurement ──
     frame_count = 0
     fps_timer = time.time()
@@ -299,7 +309,7 @@ def main():
             imgsz=args.imgsz,
             verbose=False,
             persist=True,
-            tracker="bytetrack.yaml",
+            tracker=_BYTETRACK_CFG,
             # Tracker handles all classes now (person, chair, bed, etc.)
         )
 
@@ -439,26 +449,42 @@ def main():
                 if tid == servo_target_tid:
                     _draw_servo_target(frame, cx, cy)
 
-        # ── Servo: sticky tracking — follows last waver until someone new waves ──
-        if tracker and person_positions:
+        # ── Servo: occlusion-robust sticky tracking ──────────────────────
+        if tracker:
             if servo_target_tid is not None and servo_target_tid not in current_track_ids:
-                # Target's ID disappeared (left frame or ByteTrack re-ID'd them).
-                # Try to recover: find whoever waved most recently and is still visible.
-                candidates = [
-                    (t, wave_confirm_times[t])
-                    for t in current_track_ids
-                    if t in wave_confirm_times and t in person_positions
-                ]
-                if candidates:
-                    new_tid = max(candidates, key=lambda x: x[1])[0]
-                    print(f"[SERVO] Target #{servo_target_tid} lost → reassigned #{new_tid}")
-                    servo_target_tid = new_tid
-                    servo_target_wave_time = wave_confirm_times[new_tid]
-                # If no candidates, keep servo_target_tid set — stale cleanup
-                # (5 s timeout) will clear it if the person truly left.
+                # Target ID vanished — could be a passerby occlusion or brief drop
+                if servo_target_lost_time is None:
+                    servo_target_lost_time = now
+
+                time_lost = now - servo_target_lost_time
+
+                if time_lost < SERVO_HOLD_SECS:
+                    # Plan B: hold at last known position — passerby will clear in < 1.5 s
+                    if servo_last_cx is not None and person_positions:
+                        tracker.update(servo_last_cx, servo_last_cy, frame_w, frame_h)
+                else:
+                    # Plan A: position-based recovery — pick person closest to last known pos
+                    if person_positions and servo_last_cx is not None:
+                        lx, ly = servo_last_cx, servo_last_cy
+                        # Prefer people with wave history; otherwise anyone in frame
+                        wave_pool = [t for t in person_positions if t in wave_confirm_times]
+                        pool = wave_pool if wave_pool else list(person_positions.keys())
+                        new_tid = min(pool, key=lambda t: (
+                            (person_positions[t][0] - lx) ** 2 +
+                            (person_positions[t][1] - ly) ** 2
+                        ))
+                        print(f"[SERVO] Position recovery → #{new_tid} "
+                              f"(lost {time_lost:.1f}s)")
+                        servo_target_tid = new_tid
+                        servo_target_wave_time = wave_confirm_times.get(
+                            new_tid, servo_target_wave_time)
+                    servo_target_lost_time = None
+            else:
+                servo_target_lost_time = None  # target visible — reset timer
 
             if servo_target_tid in person_positions:
                 tcx, tcy = person_positions[servo_target_tid]
+                servo_last_cx, servo_last_cy = tcx, tcy   # save for Plans A/B
                 tracker.update(tcx, tcy, frame_w, frame_h)
 
         # ── Buzzer: continuous beep while condition is active ──

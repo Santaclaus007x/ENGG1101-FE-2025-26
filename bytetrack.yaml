@@ -1,0 +1,14 @@
+# ByteTrack configuration — tuned for occlusion robustness
+# Place this file in the project root so main.py picks it up automatically.
+#
+# track_buffer: how many frames to keep a track alive when the person
+#               is not detected (e.g. briefly occluded by a passerby).
+#               Default = 30 (~1 s at 30 fps).
+#               90 = ~3 s — enough to survive most brief occlusions.
+
+tracker_type: bytetrack
+track_high_thresh: 0.5   # confidence needed for primary association
+track_low_thresh:  0.1   # confidence needed for secondary association
+new_track_thresh:  0.6   # confidence needed to start a new track
+track_buffer:      90    # ← increased from 30 — survives ~3 s of occlusion
+match_thresh:      0.8   # IoU threshold for matching existing tracks

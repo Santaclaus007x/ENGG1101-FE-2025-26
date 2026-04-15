@@ -1,14 +1,12 @@
 """
 Buzzer Controller for Fall + Wave Detection System
 ====================================================
-Controls an active buzzer connected to a Raspberry Pi GPIO pin.
+Uses gpiozero (pre-installed on Raspberry Pi OS) to drive an active buzzer.
 Falls back gracefully on non-Pi platforms (Windows/Mac development).
 
 Wiring (default):
   Buzzer +  →  BCM GPIO 17  (physical pin 11)
   Buzzer −  →  GND
-
-Override the pin with --buzzer-pin N when running main.py.
 """
 
 from __future__ import annotations
@@ -17,16 +15,16 @@ import threading
 import time
 
 try:
-    import RPi.GPIO as GPIO
+    from gpiozero import OutputDevice
     _GPIO_AVAILABLE = True
-except (ImportError, RuntimeError):
+except (ImportError, Exception):
     _GPIO_AVAILABLE = False
 
 
 class Buzzer:
     """
-    Active-buzzer driver.  Beep patterns run in daemon threads so
-    they never block the main detection loop.
+    Active-buzzer driver using gpiozero.
+    Beep patterns run in daemon threads so they never block detection.
     """
 
     DEFAULT_PIN = 17  # BCM numbering
@@ -34,21 +32,24 @@ class Buzzer:
     def __init__(self, pin: int = DEFAULT_PIN):
         self.pin = pin
         self._lock = threading.Lock()
+        self._device = None
 
         if _GPIO_AVAILABLE:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
-            GPIO.setup(self.pin, GPIO.OUT, initial=GPIO.LOW)
-            print(f"[BUZZER] GPIO ready on BCM pin {self.pin}")
+            try:
+                self._device = OutputDevice(pin, active_high=True, initial_value=False)
+                print(f"[BUZZER] GPIO ready on BCM pin {self.pin}")
+            except Exception as e:
+                print(f"[BUZZER] GPIO init failed: {e} — buzzer disabled")
+                self._device = None
         else:
-            print("[BUZZER] RPi.GPIO not available — buzzer disabled (non-Pi platform)")
+            print("[BUZZER] gpiozero not available — buzzer disabled (non-Pi platform)")
 
     # ── public API ────────────────────────────────────────────────────
 
     def beep_fall(self):
         """3 rapid urgent beeps — triggered on fall detection."""
         pattern = [
-            (0.12, 0.08),   # on 120 ms, off 80 ms
+            (0.12, 0.08),
             (0.12, 0.08),
             (0.12, 0.00),
         ]
@@ -57,16 +58,16 @@ class Buzzer:
     def beep_wave(self):
         """2 friendly longer beeps — triggered when wave is confirmed."""
         pattern = [
-            (0.30, 0.12),   # on 300 ms, off 120 ms
+            (0.30, 0.12),
             (0.30, 0.00),
         ]
         self._start(pattern)
 
     def cleanup(self):
         """Release GPIO resources on shutdown."""
-        if _GPIO_AVAILABLE:
-            GPIO.output(self.pin, GPIO.LOW)
-            GPIO.cleanup(self.pin)
+        if self._device:
+            self._device.off()
+            self._device.close()
             print("[BUZZER] GPIO cleanup done.")
 
     # ── internal ──────────────────────────────────────────────────────
@@ -80,15 +81,15 @@ class Buzzer:
         t.start()
 
     def _run_pattern(self, pattern: list):
-        if not _GPIO_AVAILABLE:
+        if not self._device:
             return
         with self._lock:
             try:
                 for on_t, off_t in pattern:
-                    GPIO.output(self.pin, GPIO.HIGH)
+                    self._device.on()
                     time.sleep(on_t)
-                    GPIO.output(self.pin, GPIO.LOW)
+                    self._device.off()
                     if off_t > 0:
                         time.sleep(off_t)
             finally:
-                GPIO.output(self.pin, GPIO.LOW)
+                self._device.off()

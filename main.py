@@ -55,10 +55,10 @@ except ImportError:
     _SERVO_AVAILABLE = False
 
 try:
-    from notifier import TelegramNotifier
-    _TELEGRAM_AVAILABLE = True
+    from notifier import DiscordNotifier
+    _NOTIFIER_AVAILABLE = True
 except ImportError:
-    _TELEGRAM_AVAILABLE = False
+    _NOTIFIER_AVAILABLE = False
 
 
 # ──────────────────────────────────────
@@ -102,10 +102,8 @@ def parse_args():
                    help="Show the environmental visual (pose skeleton and keypoints) on the video feed.")
     p.add_argument("--no-show", action="store_true",
                    help="Disable display window (headless mode)")
-    p.add_argument("--telegram-token", type=str, default=None,
-                   help="Telegram bot token for fall alerts")
-    p.add_argument("--telegram-chat", type=str, default=None,
-                   help="Telegram chat ID to send alerts to")
+    p.add_argument("--discord-webhook", type=str, default=None,
+                   help="Discord webhook URL for fall alerts")
     p.add_argument("--buzzer-pin", type=int, default=17,
                    help="BCM GPIO pin for the buzzer (default: 17)")
     p.add_argument("--no-buzzer", action="store_true",
@@ -230,18 +228,15 @@ def main():
     # ── Buzzer ──
     buzzer = None if args.no_buzzer else Buzzer(pin=args.buzzer_pin)
 
-    # ── Telegram notifier ──
+    # ── Discord notifier ──
     notifier = None
-    if args.telegram_token and args.telegram_chat:
-        if _TELEGRAM_AVAILABLE:
-            notifier = TelegramNotifier(
-                token=args.telegram_token,
-                chat_id=args.telegram_chat,
-            )
+    if args.discord_webhook:
+        if _NOTIFIER_AVAILABLE:
+            notifier = DiscordNotifier(webhook_url=args.discord_webhook)
         else:
-            print("[WARN] notifier.py not found — Telegram disabled")
+            print("[WARN] notifier.py not found — Discord alerts disabled")
     else:
-        print("[INFO] Telegram not configured (use --telegram-token and --telegram-chat)")
+        print("[INFO] Discord not configured (use --discord-webhook URL)")
 
     # ── Servo tracker ──
     tracker = None

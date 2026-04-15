@@ -1,66 +1,56 @@
 """
-Telegram Alert Notifier
-========================
-Sends a photo + caption to a Telegram chat when a fall is detected.
+Discord Webhook Notifier
+=========================
+Sends a photo + embed to a Discord channel when a fall is detected.
 
-Uses the Telegram Bot HTTP API directly — no extra library needed,
-only the `requests` package (already in most Python environments).
+Uses Discord Webhooks — no bot account, no library, just a URL.
+Only requires the `requests` package.
 
 Setup
 -----
-1. Open Telegram → search @BotFather → /newbot → follow steps → copy token.
-2. Start a chat with your new bot (search its username, press Start).
-3. Send the bot any message, then open in a browser:
-       https://api.telegram.org/bot<TOKEN>/getUpdates
-   Find "chat" → "id" — that is your chat_id.
-4. Pass both when running main.py:
-       python main.py --telegram-token <TOKEN> --telegram-chat <CHAT_ID>
+1. Open Discord → right-click any text channel → Edit Channel
+2. Integrations → Webhooks → New Webhook → Copy Webhook URL
+3. Pass the URL when running main.py:
+       python main.py --discord-webhook https://discord.com/api/webhooks/...
 """
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
 import cv2
 import requests
 
-_TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
-
-class TelegramNotifier:
+class DiscordNotifier:
     """
-    Fire-and-forget Telegram alerts.
-
-    Each alert runs in a daemon thread so it never blocks detection.
+    Fire-and-forget Discord alerts via webhook.
+    Sends an embedded message + photo on fall detection.
+    Runs in a daemon thread — never blocks the detection loop.
     Per-person cooldown prevents alert spam.
     """
 
-    def __init__(self, token: str, chat_id: str, cooldown: float = 30.0):
-        self.token    = token
-        self.chat_id  = chat_id
-        self.cooldown = cooldown
-        self._last_sent: dict[int, float] = {}   # tid → last alert timestamp
-        print(f"[Telegram] Notifier ready  chat_id={chat_id}")
+    def __init__(self, webhook_url: str, cooldown: float = 30.0):
+        self.webhook_url = webhook_url
+        self.cooldown    = cooldown
+        self._last_sent: dict[int, float] = {}
+        print(f"[Discord] Notifier ready")
+        self._test_connection()
 
     # ── Public API ─────────────────────────────────────────────────────────
 
     def send_fall_alert(self, person_id: int, frame=None) -> None:
-        """Send a fall alert (with photo if frame is provided)."""
+        """Send a fall alert with an optional photo."""
         now = time.time()
         if now - self._last_sent.get(person_id, 0) < self.cooldown:
             return  # still in cooldown for this person
         self._last_sent[person_id] = now
 
-        ts      = time.strftime("%d %b %Y  %H:%M:%S")
-        caption = (
-            f"🚨 *FALL DETECTED*\n"
-            f"Person: `#{person_id}`\n"
-            f"Time:   `{ts}`\n"
-            f"Please check immediately\!"
-        )
+        ts = time.strftime("%d %b %Y  %H:%M:%S")
 
-        # Snapshot — encode now (on main thread) before the frame is reused
+        # Encode frame now on main thread before it gets overwritten
         jpeg_bytes = None
         if frame is not None:
             ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -69,38 +59,61 @@ class TelegramNotifier:
 
         t = threading.Thread(
             target=self._send,
-            args=(caption, jpeg_bytes),
+            args=(person_id, ts, jpeg_bytes),
             daemon=True,
         )
         t.start()
 
     # ── Internal ───────────────────────────────────────────────────────────
 
-    def _send(self, caption: str, jpeg_bytes: bytes | None) -> None:
+    def _send(self, person_id: int, ts: str, jpeg_bytes: bytes | None) -> None:
+        embed = {
+            "title": "🚨 FALL DETECTED",
+            "color": 0xFF0000,   # red
+            "fields": [
+                {"name": "Person",    "value": f"#{person_id}", "inline": True},
+                {"name": "Time",      "value": ts,              "inline": True},
+                {"name": "Action",    "value": "Please check immediately!", "inline": False},
+            ],
+            "footer": {"text": "ENGG1101 Fall Detection System"},
+        }
+
+        payload = {"embeds": [embed]}
+
         try:
             if jpeg_bytes:
-                self._send_photo(caption, jpeg_bytes)
+                # Send photo + embed together
+                requests.post(
+                    self.webhook_url,
+                    data={"payload_json": json.dumps(payload)},
+                    files={"file": ("alert.jpg", jpeg_bytes, "image/jpeg")},
+                    timeout=15,
+                )
             else:
-                self._send_text(caption)
-            print("[Telegram] Alert sent.")
+                requests.post(
+                    self.webhook_url,
+                    json=payload,
+                    timeout=15,
+                )
+            print(f"[Discord] Fall alert sent for Person #{person_id}")
         except Exception as e:
-            print(f"[Telegram] Send failed: {e}")
+            print(f"[Discord] Send failed: {e}")
 
-    def _send_photo(self, caption: str, jpeg_bytes: bytes) -> None:
-        url = _TELEGRAM_API.format(token=self.token, method="sendPhoto")
-        requests.post(
-            url,
-            data={"chat_id": self.chat_id, "caption": caption,
-                  "parse_mode": "MarkdownV2"},
-            files={"photo": ("alert.jpg", jpeg_bytes, "image/jpeg")},
-            timeout=15,
-        )
-
-    def _send_text(self, text: str) -> None:
-        url = _TELEGRAM_API.format(token=self.token, method="sendMessage")
-        requests.post(
-            url,
-            data={"chat_id": self.chat_id, "text": text,
-                  "parse_mode": "MarkdownV2"},
-            timeout=15,
-        )
+    def _test_connection(self) -> None:
+        """Send a startup message to confirm the webhook works."""
+        payload = {
+            "embeds": [{
+                "title": "✅ Fall Detection System Online",
+                "color": 0x00CC44,
+                "description": "Monitoring started. Fall alerts will appear here.",
+                "footer": {"text": "ENGG1101 Fall Detection System"},
+            }]
+        }
+        try:
+            r = requests.post(self.webhook_url, json=payload, timeout=10)
+            if r.status_code in (200, 204):
+                print("[Discord] Connection confirmed — startup message sent.")
+            else:
+                print(f"[Discord] Webhook returned {r.status_code} — check the URL.")
+        except Exception as e:
+            print(f"[Discord] Connection test failed: {e}")

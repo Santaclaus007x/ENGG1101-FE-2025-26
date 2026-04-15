@@ -439,22 +439,23 @@ def main():
                 if tid == servo_target_tid:
                     _draw_servo_target(frame, cx, cy)
 
-        # ── Servo: track latest waving person (sticky) ──────────────────
+        # ── Servo: sticky tracking — follows last waver until someone new waves ──
         if tracker and person_positions:
-            # If current target left the frame, clear it
-            if servo_target_tid not in current_track_ids:
-                if servo_target_tid is not None:
-                    print(f"[SERVO] Target #{servo_target_tid} left frame — released")
-                servo_target_tid = None
-                # Fall back to whoever waved most recently and is still here
-                active_wavers = [
+            if servo_target_tid is not None and servo_target_tid not in current_track_ids:
+                # Target's ID disappeared (left frame or ByteTrack re-ID'd them).
+                # Try to recover: find whoever waved most recently and is still visible.
+                candidates = [
                     (t, wave_confirm_times[t])
                     for t in current_track_ids
-                    if wave_confirmed.get(t, False) and t in wave_confirm_times
+                    if t in wave_confirm_times and t in person_positions
                 ]
-                if active_wavers:
-                    servo_target_tid = max(active_wavers, key=lambda x: x[1])[0]
-                    servo_target_wave_time = wave_confirm_times[servo_target_tid]
+                if candidates:
+                    new_tid = max(candidates, key=lambda x: x[1])[0]
+                    print(f"[SERVO] Target #{servo_target_tid} lost → reassigned #{new_tid}")
+                    servo_target_tid = new_tid
+                    servo_target_wave_time = wave_confirm_times[new_tid]
+                # If no candidates, keep servo_target_tid set — stale cleanup
+                # (5 s timeout) will clear it if the person truly left.
 
             if servo_target_tid in person_positions:
                 tcx, tcy = person_positions[servo_target_tid]

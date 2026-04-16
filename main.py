@@ -25,6 +25,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -68,6 +69,8 @@ KP_LEFT_SHOULDER  = 5
 KP_RIGHT_SHOULDER = 6
 KP_LEFT_WRIST     = 9
 KP_RIGHT_WRIST    = 10
+KP_LEFT_HIP       = 11
+KP_RIGHT_HIP      = 12
 
 KEYPOINT_NAMES = [
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
@@ -96,6 +99,8 @@ def parse_args():
                    help="YOLO input resolution (lower = faster, default: 384)")
     p.add_argument("--aspect-ratio", type=float, default=0.7,
                    help="Aspect ratio (H/W) threshold — below = falling (default: 0.7)")
+    p.add_argument("--torso-angle", type=float, default=50.0,
+                   help="Torso angle threshold in degrees — above = falling (default: 50)")
     p.add_argument("--wave-seconds", type=float, default=2.0,
                    help="Seconds wrist must stay above shoulder to trigger wave (default: 2.0)")
     p.add_argument("--show-env", action="store_true",
@@ -132,6 +137,41 @@ def parse_args():
 # ──────────────────────────────────────
 # Wave detection helper
 # ──────────────────────────────────────
+def compute_torso_angle(person_kps, conf_threshold: float = 0.4):
+    """
+    Compute the torso angle from vertical using shoulder and hip keypoints.
+
+    Returns degrees from vertical:
+      ~0–20°  → standing upright
+      ~20–50° → leaning / bending
+      >50°    → falling / lying down
+
+    Returns None if any required keypoint lacks sufficient confidence.
+    """
+    l_sh = person_kps[KP_LEFT_SHOULDER]
+    r_sh = person_kps[KP_RIGHT_SHOULDER]
+    l_hp = person_kps[KP_LEFT_HIP]
+    r_hp = person_kps[KP_RIGHT_HIP]
+
+    # All four keypoints must be confident enough
+    if not all(float(kp[2]) > conf_threshold for kp in [l_sh, r_sh, l_hp, r_hp]):
+        return None
+
+    # Mid-points
+    mid_sh_x = (float(l_sh[0]) + float(r_sh[0])) / 2
+    mid_sh_y = (float(l_sh[1]) + float(r_sh[1])) / 2
+    mid_hp_x = (float(l_hp[0]) + float(r_hp[0])) / 2
+    mid_hp_y = (float(l_hp[1]) + float(r_hp[1])) / 2
+
+    # Vector from hip to shoulder
+    vec_x = mid_sh_x - mid_hp_x
+    vec_y = mid_sh_y - mid_hp_y   # negative when upright (shoulder above hip)
+
+    # Angle from vertical: 0° = upright, 90° = horizontal
+    angle = math.degrees(math.atan2(abs(vec_x), abs(vec_y)))
+    return angle, (mid_hp_x, mid_hp_y), (mid_sh_x, mid_sh_y)
+
+
 def check_waving(person_kps, conf_threshold: float = 0.5) -> bool:
     """
     Check if a person is raising either wrist above the corresponding shoulder.
@@ -261,6 +301,7 @@ def main():
     # ── Fall detector config ──
     config = FallDetectorConfig(
         aspect_ratio_threshold=args.aspect_ratio,
+        torso_angle_threshold=args.torso_angle,
         confirmation_frames=int(cam_fps * 0.5),  # ~0.5 seconds
     )
 
@@ -400,7 +441,18 @@ def main():
 
                 detector = detectors[tid]
                 bbox = tuple(box)  # (x1, y1, x2, y2)
-                alert = detector.update(bbox, timestamp=now)
+
+                # ── Torso angle from pose keypoints ──
+                torso_result = None
+                torso_angle  = None
+                mid_hip_pt   = None
+                mid_sh_pt    = None
+                if keypoints_data is not None and i < len(keypoints_data):
+                    torso_result = compute_torso_angle(keypoints_data[i])
+                    if torso_result is not None:
+                        torso_angle, mid_hip_pt, mid_sh_pt = torso_result
+
+                alert = detector.update(bbox, timestamp=now, torso_angle=torso_angle)
 
                 if alert is not None:
                     active_alerts[tid] = (alert, now + 3.0)
@@ -408,9 +460,14 @@ def main():
                     if notifier:
                         notifier.send_fall_alert(tid, frame)
 
-                # Continuous fall state — beep while person is actually falling
+                # Draw torso line — angle visualisation
+                if mid_hip_pt and mid_sh_pt:
+                    _draw_torso_line(frame, mid_hip_pt, mid_sh_pt, torso_angle,
+                                     config.torso_angle_threshold)
+
+                # Continuous fall state — use combined signal for buzzer
                 metrics = detector.get_latest_metrics()
-                if metrics.get('aspect_ratio', 1.5) < metrics.get('threshold', 0.7):
+                if metrics.get('is_currently_falling', False):
                     any_fall_active = True
 
                 # ────────────────────────────
@@ -594,6 +651,41 @@ def _log_wave(person_id: int, duration: float):
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] ** WAVE DETECTED **  Person #{person_id}  "
           f"duration={duration:.1f}s")
+
+
+def _draw_torso_line(frame, mid_hip_pt, mid_sh_pt,
+                     angle: float, threshold: float):
+    """
+    Draw a colored line from mid-hip to mid-shoulder to visualise torso angle.
+
+    Color coding:
+      green  → upright   (angle < threshold * 0.7)
+      orange → warning   (threshold * 0.7 ≤ angle < threshold)
+      red    → falling   (angle ≥ threshold)
+    The angle value is printed next to the shoulder mid-point.
+    """
+    hip_pt = (int(mid_hip_pt[0]), int(mid_hip_pt[1]))
+    sh_pt  = (int(mid_sh_pt[0]),  int(mid_sh_pt[1]))
+
+    if angle >= threshold:
+        col = (0, 0, 255)          # red
+    elif angle >= threshold * 0.7:
+        col = (0, 165, 255)        # orange
+    else:
+        col = (0, 220, 100)        # green
+
+    cv2.line(frame, hip_pt, sh_pt, col, 2, cv2.LINE_AA)
+
+    # Small filled circles at each end for clarity
+    cv2.circle(frame, hip_pt, 4, col, -1, cv2.LINE_AA)
+    cv2.circle(frame, sh_pt,  4, col, -1, cv2.LINE_AA)
+
+    # Angle label near the shoulder point
+    label = f"{angle:.0f}\u00b0"   # e.g. "38°"
+    lx = sh_pt[0] + 6
+    ly = sh_pt[1] - 6
+    cv2.putText(frame, label, (lx, ly),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
 
 
 if __name__ == "__main__":

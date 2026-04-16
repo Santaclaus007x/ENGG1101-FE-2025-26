@@ -2,7 +2,7 @@
 Visualization overlay for the Fall + Wave Detection System
 ============================================================
 Draws bounding boxes (green = standing, orange = warning, red = falling,
-blue = waving), aspect ratio labels, wave status, and alert banners.
+blue = waving), aspect ratio + torso angle labels, wave status, and alert banners.
 """
 
 from __future__ import annotations
@@ -83,8 +83,10 @@ def draw_fall_overlay(frame: np.ndarray,
     # ── 2. Draw bounding box ──
     cv2.rectangle(frame, (x1, y1), (x2, y2), col, 2, cv2.LINE_AA)
 
-    # ── 3. Label: Person ID + aspect ratio + status ──
-    label = f"#{person_id}  H/W={ratio:.2f}  [{status}]"
+    # ── 3. Label: Person ID + aspect ratio + torso angle + status ──
+    torso_angle = metrics.get("torso_angle")
+    angle_str   = f"  Torso={torso_angle:.0f}°" if torso_angle is not None else ""
+    label = f"#{person_id}  H/W={ratio:.2f}{angle_str}  [{status}]"
     if is_wave_confirmed:
         label += "  [WAVING]"
     _draw_label(frame, label, (x1, y1 - 10), col)
@@ -104,7 +106,7 @@ def draw_fall_overlay(frame: np.ndarray,
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, col, 1, cv2.LINE_AA)
 
     # ── 5. HUD panel (top-left) ──
-    _draw_hud_panel(frame, ratio, threshold, person_id, status, wave_info)
+    _draw_hud_panel(frame, metrics, person_id, status, wave_info)
 
     # ── 6. Alert banner (fall) ──
     if alert is not None:
@@ -127,49 +129,74 @@ def draw_env_object(frame: np.ndarray, bbox: tuple, label: str) -> np.ndarray:
 
 
 def _draw_hud_panel(frame: np.ndarray,
-                    ratio: float, threshold: float,
+                    metrics: Dict[str, Any],
                     person_id: int, status: str,
                     wave_info: Optional[Dict[str, Any]] = None):
     """Compact semi-transparent metrics panel in the top-left corner."""
-    has_wave = wave_info is not None
-    panel_w, panel_h = 260, 90 if has_wave else 70
-    x0, y0 = 10, 10
+    ratio           = metrics.get("aspect_ratio", 1.5)
+    threshold       = metrics.get("threshold", 0.7)
+    torso_angle     = metrics.get("torso_angle")
+    angle_threshold = metrics.get("angle_threshold", 50.0)
+
+    has_wave  = wave_info is not None
+    has_angle = torso_angle is not None
+    n_rows    = 3 + (1 if has_angle else 0) + (1 if has_wave else 0)
+    panel_w   = 280
+    panel_h   = 18 + n_rows * 20
+    x0, y0    = 10, 10
 
     # Semi-transparent background
     overlay = frame.copy()
     cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h),
                   COL_PANEL_BG, -1)
     cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-
-    # Border
     cv2.rectangle(frame, (x0, y0), (x0 + panel_w, y0 + panel_h),
                   (80, 80, 80), 1, cv2.LINE_AA)
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.42
+    font   = cv2.FONT_HERSHEY_SIMPLEX
+    scale  = 0.42
     line_h = 20
 
-    lines = [
-        f"Person #{person_id}   Status: {status}",
-        f"Aspect Ratio (H/W): {ratio:.2f}",
-        f"Threshold:          {threshold:.2f}",
+    # Build rows as (text, color)
+    rows = [
+        (f"Person #{person_id}   Status: {status}", COL_TEXT_WHITE),
     ]
 
+    # Aspect ratio row
+    if ratio < threshold:
+        ar_col = COL_BOX_FALLING
+    elif ratio < threshold + 0.3:
+        ar_col = COL_BOX_WARNING
+    else:
+        ar_col = COL_TEXT_WHITE
+    rows.append((f"Aspect Ratio (H/W): {ratio:.2f}  [thr {threshold:.2f}]", ar_col))
+
+    # Torso angle row
+    if has_angle:
+        if torso_angle > angle_threshold:
+            ang_col = COL_BOX_FALLING
+        elif torso_angle > angle_threshold * 0.7:
+            ang_col = COL_BOX_WARNING
+        else:
+            ang_col = COL_TEXT_WHITE
+        rows.append((f"Torso Angle:        {torso_angle:.1f}°  [thr {angle_threshold:.0f}°]",
+                     ang_col))
+
+    # Detection method note
+    method = "dual-signal" if has_angle else "ratio only"
+    rows.append((f"Detection:          {method}", (160, 160, 160)))
+
+    # Wave row
     if has_wave:
         is_waving = wave_info.get("is_waving", False)
-        duration = wave_info.get("duration", 0.0)
+        duration  = wave_info.get("duration", 0.0)
         confirmed = wave_info.get("confirmed", False)
-        wave_str = "YES" if confirmed else (f"Raising hand ({duration:.1f}s)" if is_waving else "No")
-        lines.append(f"Wave:               {wave_str}")
+        wave_str  = "YES" if confirmed else (
+            f"Raising ({duration:.1f}s)" if is_waving else "No")
+        w_col = COL_BOX_WAVING if confirmed else COL_TEXT_WHITE
+        rows.append((f"Wave:               {wave_str}", w_col))
 
-    for i, text in enumerate(lines):
-        col = COL_TEXT_WHITE
-        if i == 1 and ratio < threshold:
-            col = COL_BOX_FALLING
-        elif i == 1 and ratio < threshold + 0.3:
-            col = COL_BOX_WARNING
-        elif i == 3 and has_wave and wave_info.get("confirmed", False):
-            col = COL_BOX_WAVING
+    for i, (text, col) in enumerate(rows):
         cv2.putText(frame, text, (x0 + 8, y0 + 18 + i * line_h),
                     font, scale, col, 1, cv2.LINE_AA)
 

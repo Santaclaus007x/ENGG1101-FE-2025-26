@@ -28,6 +28,7 @@ import argparse
 import math
 import os
 import sys
+import threading
 import time
 from typing import Dict
 
@@ -63,6 +64,41 @@ except ImportError:
 
 
 # ──────────────────────────────────────
+# Threaded camera reader
+# ──────────────────────────────────────
+class ThreadedCamera:
+    """
+    Reads frames in a background daemon thread so cap.read() never blocks
+    the inference loop.  Always returns the latest available frame.
+    """
+    def __init__(self, cap: cv2.VideoCapture):
+        self._cap   = cap
+        self._frame = None
+        self._lock  = threading.Lock()
+        self._stop  = threading.Event()
+        t = threading.Thread(target=self._reader, daemon=True)
+        t.start()
+
+    def _reader(self):
+        while not self._stop.is_set():
+            ret, frame = self._cap.read()
+            if ret:
+                with self._lock:
+                    self._frame = frame
+
+    def read(self):
+        """Return (True, latest_frame) or (False, None) if no frame yet."""
+        with self._lock:
+            if self._frame is None:
+                return False, None
+            return True, self._frame.copy()
+
+    def release(self):
+        self._stop.set()
+        self._cap.release()
+
+
+# ──────────────────────────────────────
 # COCO Keypoint indices + names
 # ──────────────────────────────────────
 KP_LEFT_SHOULDER  = 5
@@ -95,8 +131,10 @@ def parse_args():
                    help="Save annotated video to this path")
     p.add_argument("--conf", type=float, default=0.4,
                    help="Detection confidence threshold (default: 0.4)")
-    p.add_argument("--imgsz", type=int, default=384,
-                   help="YOLO input resolution (lower = faster, default: 384)")
+    p.add_argument("--imgsz", type=int, default=256,
+                   help="YOLO input resolution (lower = faster, default: 256)")
+    p.add_argument("--half", action="store_true",
+                   help="Use FP16 half-precision inference (faster on GPU)")
     p.add_argument("--aspect-ratio", type=float, default=0.7,
                    help="Aspect ratio (H/W) threshold — below = falling (default: 0.7)")
     p.add_argument("--torso-angle", type=float, default=50.0,
@@ -257,6 +295,9 @@ def main():
     cam_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     print(f"[INIT] Stream: {frame_w}x{frame_h} @ {cam_fps:.0f} FPS")
 
+    # Wrap in threaded reader so cap.read() never blocks inference
+    cap = ThreadedCamera(cap)
+
     # ── Video writer (optional) ──
     writer = None
     if args.output:
@@ -335,8 +376,9 @@ def main():
     print()
     print("=" * 55)
     print("  FALL + WAVE DETECTION RUNNING — press 'q' to quit")
-    print(f"  Fall:  Bounding Box Aspect Ratio < {args.aspect_ratio}")
+    print(f"  Fall:  H/W ratio < {args.aspect_ratio}  +  torso > {args.torso_angle:.0f}°")
     print(f"  Wave:  Wrist above shoulder for {wave_threshold:.0f}s")
+    print(f"  Infer: imgsz={args.imgsz}  half={args.half}")
     print("=" * 55)
     print()
 
@@ -366,10 +408,10 @@ def main():
             frame,
             conf=args.conf,
             imgsz=args.imgsz,
+            half=args.half,
             verbose=False,
             persist=True,
             tracker=_BYTETRACK_CFG,
-            # Tracker handles all classes now (person, chair, bed, etc.)
         )
 
         result = results[0]
@@ -599,7 +641,7 @@ def main():
                 break
 
     # ── Cleanup ──
-    cap.release()
+    cap.release()   # works for both cv2.VideoCapture and ThreadedCamera
     if writer:
         writer.release()
     cv2.destroyAllWindows()

@@ -62,6 +62,13 @@ try:
 except ImportError:
     _NOTIFIER_AVAILABLE = False
 
+# Load local config (webhook URL, etc.) — file is gitignored, never pushed
+try:
+    import config as _cfg
+    _CONFIG_WEBHOOK = getattr(_cfg, "DISCORD_WEBHOOK_URL", "").strip()
+except ImportError:
+    _CONFIG_WEBHOOK = ""
+
 
 # ──────────────────────────────────────
 # Threaded camera reader
@@ -310,14 +317,18 @@ def main():
     buzzer = None if args.no_buzzer else Buzzer(pin=args.buzzer_pin)
 
     # ── Discord notifier ──
+    # Priority: --discord-webhook flag > config.py > disabled
+    webhook_url = args.discord_webhook or _CONFIG_WEBHOOK or None
     notifier = None
-    if args.discord_webhook:
+    if webhook_url:
         if _NOTIFIER_AVAILABLE:
-            notifier = DiscordNotifier(webhook_url=args.discord_webhook)
+            notifier = DiscordNotifier(webhook_url=webhook_url)
+            src = "flag" if args.discord_webhook else "config.py"
+            print(f"[INIT] Discord alerts enabled (source: {src})")
         else:
             print("[WARN] notifier.py not found — Discord alerts disabled")
     else:
-        print("[INFO] Discord not configured (use --discord-webhook URL)")
+        print("[INFO] Discord not configured — add DISCORD_WEBHOOK_URL to config.py")
 
     # ── Servo tracker ──
     tracker = None

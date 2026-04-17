@@ -1,7 +1,29 @@
-# Fall Detection System — ENGG1101
-# ================================
-# Python 3.9+
+# ─────────────────────────────────────────────────────────────
+#  ENGG1101 Fall + Wave Detection System — HKU
+#  Python 3.9+
+#
+#  Install all at once:
+#      pip install -r requirements.txt
+#
+#  Raspberry Pi extra steps (after pip install):
+#      sudo apt install swig liblgpio-dev
+#      pip install lgpio
+# ─────────────────────────────────────────────────────────────
 
-ultralytics>=8.0.0
-opencv-python>=4.8.0
-numpy>=1.24.0
+# ── Core detection ────────────────────────────────────────────
+ultralytics>=8.0.0        # YOLO pose model + ByteTrack
+opencv-python>=4.8.0      # frame capture, drawing, JPEG encode
+numpy>=1.24.0             # tensor ops
+
+# ── Discord alerts ────────────────────────────────────────────
+requests>=2.28.0          # HTTP POST to Discord webhook
+
+# ── Servo control (STS3215 via USB serial) ───────────────────
+pyserial>=3.5             # serial port for scservo_sdk
+
+# ── Buzzer (Raspberry Pi GPIO) ────────────────────────────────
+# gpiozero is pre-installed on Raspberry Pi OS.
+# On a fresh Pi or if missing, install manually:
+#     pip install gpiozero
+#     sudo apt install swig liblgpio-dev && pip install lgpio
+# Not required on Windows (buzzer is automatically disabled).

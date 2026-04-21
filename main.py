@@ -62,8 +62,11 @@ try:
 except ImportError:
     _NOTIFIER_AVAILABLE = False
 
-# Discord webhook — hardcoded for this deployment
-_CONFIG_WEBHOOK = "WEBHOOK_REMOVED"
+# Discord webhook — loaded from config.py (gitignored, never pushed)
+try:
+    from config import DISCORD_WEBHOOK_URL as _CONFIG_WEBHOOK
+except ImportError:
+    _CONFIG_WEBHOOK = ""
 
 
 # ──────────────────────────────────────
@@ -313,17 +316,10 @@ def main():
     buzzer = None if args.no_buzzer else Buzzer(pin=args.buzzer_pin)
 
     # ── Discord notifier ──
-    # Priority: --discord-webhook flag > config.py > disabled
-    webhook_url = args.discord_webhook or _CONFIG_WEBHOOK or None
     notifier = None
-    if webhook_url:
-        if _NOTIFIER_AVAILABLE:
-            notifier = DiscordNotifier(webhook_url=webhook_url)
-            src = "flag" if args.discord_webhook else "config.py"
-            print(f"[INIT] Discord alerts enabled (source: {src})")
-        else:
-            print("[WARN] notifier.py not found — Discord alerts disabled")
-    else:
+    if _CONFIG_WEBHOOK and _NOTIFIER_AVAILABLE:
+        notifier = DiscordNotifier(webhook_url=_CONFIG_WEBHOOK)
+    elif not _CONFIG_WEBHOOK:
         print("[INFO] Discord not configured — add DISCORD_WEBHOOK_URL to config.py")
 
     # ── Servo tracker ──

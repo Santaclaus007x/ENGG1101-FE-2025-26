@@ -109,7 +109,7 @@ class ServoTracker:
     baudrate : int
         Serial baud rate. Must match the servo's stored value.
     pan_travel_deg : float
-        Max degrees the pan  servo travels left/right from home (default 150°).
+        Max degrees the pan  servo travels left/right from home (default 90°).
     tilt_travel_deg : float
         Max degrees the tilt servo travels up/down  from home (default 45°).
         Keep this small — excessive tilt can strain the camera mount.
@@ -128,7 +128,7 @@ class ServoTracker:
         speed:           int   = 1200,
         acc:             int   = 20,
         baudrate:        int   = 115200,
-        pan_travel_deg:  float = 150.0,
+        pan_travel_deg:  float = 90.0,
         tilt_travel_deg: float = 45.0,
     ) -> None:
         self.pan_id       = pan_id

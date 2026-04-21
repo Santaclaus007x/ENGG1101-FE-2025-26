@@ -177,6 +177,8 @@ def parse_args():
                    help="Camera horizontal field of view in degrees (default: 60)")
     p.add_argument("--cam-vfov", type=float, default=40.0,
                    help="Camera vertical field of view in degrees (default: 40)")
+    p.add_argument("--pan-travel", type=float, default=90.0,
+                   help="Max pan degrees left/right from home (default: 90 = 180° total)")
     p.add_argument("--tilt-travel", type=float, default=45.0,
                    help="Max tilt degrees up/down from home (default: 45)")
     return p.parse_args()
@@ -372,6 +374,7 @@ def main():
                 smooth_alpha=args.servo_alpha,
                 cam_hfov=args.cam_hfov,
                 cam_vfov=args.cam_vfov,
+                pan_travel_deg=args.pan_travel,
                 tilt_travel_deg=args.tilt_travel,
             )
         except Exception as e:

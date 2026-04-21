@@ -62,12 +62,8 @@ try:
 except ImportError:
     _NOTIFIER_AVAILABLE = False
 
-# Load local config (webhook URL, etc.) — file is gitignored, never pushed
-try:
-    import config as _cfg
-    _CONFIG_WEBHOOK = getattr(_cfg, "DISCORD_WEBHOOK_URL", "").strip()
-except ImportError:
-    _CONFIG_WEBHOOK = ""
+# Discord webhook — hardcoded for this deployment
+_CONFIG_WEBHOOK = "WEBHOOK_REMOVED"
 
 
 # ──────────────────────────────────────

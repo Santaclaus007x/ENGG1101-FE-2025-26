@@ -23,7 +23,7 @@ from scservo_sdk import PortHandler, sms_sts, COMM_SUCCESS
 
 # ── Constants (must match servo_tracker.py) ───────────────────────────────────
 STEPS_PER_DEG = 4096.0 / 360.0   # 11.377 steps per degree
-ADJUST_DEG    = 10.0              # degrees to move anti-clockwise
+ADJUST_DEG    = 5.0               # degrees to move anti-clockwise
 ADJUST_STEPS  = int(ADJUST_DEG * STEPS_PER_DEG)   # ≈ 114 steps
 
 
@@ -111,7 +111,7 @@ def run(port: str, tilt_id: int, baudrate: int = 115200):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Move tilt servo 10° anti-clockwise")
+    p = argparse.ArgumentParser(description="Move tilt servo 5° anti-clockwise")
     p.add_argument("--port",     default="/dev/ttyUSB0",
                    help="Serial port (default: /dev/ttyUSB0)")
     p.add_argument("--tilt-id", type=int, default=4,

@@ -30,7 +30,8 @@ import os
 import sys
 import threading
 import time
-from typing import Dict
+from collections import deque
+from typing import Dict, Deque
 
 import cv2
 
@@ -109,6 +110,8 @@ class ThreadedCamera:
 # ──────────────────────────────────────
 KP_LEFT_SHOULDER  = 5
 KP_RIGHT_SHOULDER = 6
+KP_LEFT_ELBOW     = 7
+KP_RIGHT_ELBOW    = 8
 KP_LEFT_WRIST     = 9
 KP_RIGHT_WRIST    = 10
 KP_LEFT_HIP       = 11
@@ -175,6 +178,8 @@ def parse_args():
                    help="Camera horizontal field of view in degrees (default: 60)")
     p.add_argument("--cam-vfov", type=float, default=40.0,
                    help="Camera vertical field of view in degrees (default: 40)")
+    p.add_argument("--tilt-travel", type=float, default=45.0,
+                   help="Max tilt degrees up/down from home (default: 45)")
     return p.parse_args()
 
 
@@ -245,6 +250,71 @@ def check_waving(person_kps, conf_threshold: float = 0.5) -> bool:
             return True
 
     return False
+
+
+def check_thumbs_up(person_kps, conf_threshold: float = 0.5) -> bool:
+    """
+    Detect a thumbs-up: wrist raised above the shoulder with the arm
+    pointing roughly vertical (close to shoulder x), NOT extended sideways.
+
+    This distinguishes it from the wave gesture (arm extended outward).
+    Uses shoulder width as a relative scale so it works at any distance.
+    """
+    l_sh = person_kps[KP_LEFT_SHOULDER]
+    r_sh = person_kps[KP_RIGHT_SHOULDER]
+    l_wr = person_kps[KP_LEFT_WRIST]
+    r_wr = person_kps[KP_RIGHT_WRIST]
+
+    # Shoulder width as reference scale (fall back to 40px minimum)
+    sh_width = max(abs(float(r_sh[0]) - float(l_sh[0])), 40.0)
+    vertical_thresh = sh_width * 0.55   # arm must be within this range of shoulder
+
+    # Left arm: wrist above shoulder AND arm vertical
+    if float(l_wr[2]) > conf_threshold and float(l_sh[2]) > conf_threshold:
+        if (float(l_wr[1]) < float(l_sh[1]) and
+                abs(float(l_wr[0]) - float(l_sh[0])) < vertical_thresh):
+            return True
+
+    # Right arm: wrist above shoulder AND arm vertical
+    if float(r_wr[2]) > conf_threshold and float(r_sh[2]) > conf_threshold:
+        if (float(r_wr[1]) < float(r_sh[1]) and
+                abs(float(r_wr[0]) - float(r_sh[0])) < vertical_thresh):
+            return True
+
+    return False
+
+
+def check_67_gesture(history: deque, now: float,
+                     min_swings: int = 2, window: float = 1.0) -> bool:
+    """
+    Detect the rapid horizontal hand-shake (the '67 meme' motion).
+
+    Looks for ≥ min_swings direction reversals within `window` seconds.
+    Works at low FPS (Pi ~5-10 fps) by using a generous 1-second window.
+
+    Parameters
+    ----------
+    history    : deque of (timestamp, x_pixel) for the tracked wrist
+    now        : current timestamp
+    min_swings : direction reversals needed to trigger (default 2)
+    window     : look-back window in seconds (default 1.0)
+    """
+    recent = [(t, x) for t, x in history if now - t < window]
+    if len(recent) < 5:
+        return False
+
+    changes = 0
+    last_dir = 0
+    for i in range(1, len(recent)):
+        dx = recent[i][1] - recent[i - 1][1]
+        if abs(dx) < 8:          # ignore tiny jitter (< 8 px)
+            continue
+        cur_dir = 1 if dx > 0 else -1
+        if last_dir != 0 and cur_dir != last_dir:
+            changes += 1
+        last_dir = cur_dir
+
+    return changes >= min_swings
 
 
 # ──────────────────────────────────────
@@ -335,6 +405,7 @@ def main():
                 smooth_alpha=args.servo_alpha,
                 cam_hfov=args.cam_hfov,
                 cam_vfov=args.cam_vfov,
+                tilt_travel_deg=args.tilt_travel,
             )
         except Exception as e:
             print(f"[WARN] Servo tracker disabled: {e}")
@@ -360,6 +431,16 @@ def main():
     wave_confirm_times: Dict[int, float] = {}         # timestamp of latest confirmation
 
     wave_threshold = args.wave_seconds  # seconds required
+
+    # ── Thumbs-up state (1-second hold triggers tracking) ──
+    thumbs_up_start:     Dict[int, float | None] = {}   # tid → when hold started
+    thumbs_up_confirmed: Dict[int, bool]          = {}   # tid → True once held ≥1s
+    _THUMBS_UP_SECS = 1.0
+
+    # ── 67 gesture state (rapid wrist oscillation → camera shake) ──
+    wrist_67_history: Dict[int, deque] = {}   # tid → deque of (ts, x_pixel)
+    _67_last_shake:   Dict[int, float] = {}   # tid → last shake timestamp
+    _67_COOLDOWN = 2.5                         # seconds between shakes per person
 
     # ── Servo target — sticky: tracks the most-recently-waving person ──
     servo_target_tid: int | None = None
@@ -486,6 +567,7 @@ def main():
 
                 detector = detectors[tid]
                 bbox = tuple(box)  # (x1, y1, x2, y2)
+                x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
 
                 # ── Torso angle from pose keypoints ──
                 torso_result = None
@@ -554,6 +636,56 @@ def main():
                             "confirmed": False,
                         }
 
+                # ────────────────────────────
+                # THUMBS-UP DETECTION (1 s hold → start tracking)
+                # ────────────────────────────
+                thumbs_up_info = None
+                if keypoints_data is not None and i < len(keypoints_data):
+                    is_thumb_up = check_thumbs_up(keypoints_data[i])
+                    if is_thumb_up:
+                        if thumbs_up_start.get(tid) is None:
+                            thumbs_up_start[tid] = now
+                        tu_dur = now - thumbs_up_start[tid]
+                        tu_conf = tu_dur >= _THUMBS_UP_SECS
+                        if tu_conf and not thumbs_up_confirmed.get(tid, False):
+                            thumbs_up_confirmed[tid] = True
+                            if now >= servo_target_wave_time:
+                                servo_target_tid       = tid
+                                servo_target_wave_time = now
+                                print(f"[GESTURE] 👍 Thumbs-up → tracking Person #{tid}")
+                        thumbs_up_info = {"active": True, "duration": tu_dur,
+                                          "confirmed": tu_conf}
+                    else:
+                        thumbs_up_start[tid]     = None
+                        thumbs_up_confirmed[tid] = False
+                        thumbs_up_info = {"active": False, "duration": 0.0,
+                                          "confirmed": False}
+
+                # ────────────────────────────
+                # 67 GESTURE DETECTION (rapid wrist shake → camera shakes)
+                # ────────────────────────────
+                if keypoints_data is not None and i < len(keypoints_data):
+                    l_wr = keypoints_data[i][KP_LEFT_WRIST]
+                    r_wr = keypoints_data[i][KP_RIGHT_WRIST]
+                    # Pick the most-confident wrist
+                    wx = None
+                    if float(l_wr[2]) > 0.4 or float(r_wr[2]) > 0.4:
+                        if float(r_wr[2]) >= float(l_wr[2]):
+                            wx = float(r_wr[0])
+                        else:
+                            wx = float(l_wr[0])
+                    if wx is not None:
+                        if tid not in wrist_67_history:
+                            wrist_67_history[tid] = deque(maxlen=30)
+                        wrist_67_history[tid].append((now, wx))
+                        if (check_67_gesture(wrist_67_history[tid], now) and
+                                tracker is not None and
+                                now - _67_last_shake.get(tid, 0) > _67_COOLDOWN):
+                            _67_last_shake[tid] = now
+                            tracker.shake()
+                            _draw_67_flash(frame, cx, cy)
+                            print(f"[GESTURE] 67 detected — Person #{tid} 🤙")
+
                 # ── Draw overlay for this person ──
                 metrics = detector.get_latest_metrics()
                 current_alert = None
@@ -566,6 +698,12 @@ def main():
 
                 draw_fall_overlay(frame, metrics, current_alert, tid,
                                   wave_info=wave_info)
+
+                # Thumbs-up indicator above the bounding box
+                if thumbs_up_info and thumbs_up_info["active"]:
+                    _draw_thumbs_up_indicator(frame, x1, y1,
+                                              thumbs_up_info["duration"],
+                                              thumbs_up_info["confirmed"])
 
                 # ── Servo target marker ──
                 if tid == servo_target_tid:
@@ -627,6 +765,10 @@ def main():
             wave_start_times.pop(tid, None)
             wave_confirmed.pop(tid, None)
             wave_confirm_times.pop(tid, None)
+            thumbs_up_start.pop(tid, None)
+            thumbs_up_confirmed.pop(tid, None)
+            wrist_67_history.pop(tid, None)
+            _67_last_shake.pop(tid, None)
 
         # ── Draw status bar ──
         _draw_status_bar(frame, display_fps, len(current_track_ids),
@@ -731,6 +873,37 @@ def _draw_torso_line(frame, mid_hip_pt, mid_sh_pt,
     ly = sh_pt[1] - 6
     cv2.putText(frame, label, (lx, ly),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
+
+
+def _draw_thumbs_up_indicator(frame, x1: int, y1: int,
+                              duration: float, confirmed: bool):
+    """
+    Small banner above the bounding box showing thumbs-up progress.
+    Green once confirmed (≥ 1 s), yellow while counting up.
+    """
+    col  = (0, 255, 120) if confirmed else (0, 220, 255)
+    text = f"👍 TRACKING!" if confirmed else f"👍 {duration:.1f}s / 1.0s"
+    # Fallback to ASCII if the font can't render emoji
+    text_ascii = "THUMBS UP! TRACKING" if confirmed else f"THUMB UP {duration:.1f}s"
+    tx, ty = x1, max(y1 - 28, 14)
+    cv2.putText(frame, text_ascii, (tx, ty),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
+
+
+def _draw_67_flash(frame, cx: int, cy: int):
+    """
+    Brief on-screen flash label when the 67 gesture is detected.
+    Drawn at the person's centre.
+    """
+    col  = (0, 200, 255)
+    text = "67! SHAKE"
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+    tx = cx - tw // 2
+    ty = cy - 50
+    cv2.rectangle(frame, (tx - 6, ty - th - 6), (tx + tw + 6, ty + 6),
+                  (0, 0, 0), -1)
+    cv2.putText(frame, text, (tx, ty),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2, cv2.LINE_AA)
 
 
 if __name__ == "__main__":

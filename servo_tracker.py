@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from typing import Tuple
 
@@ -108,24 +109,28 @@ class ServoTracker:
         Servo acceleration (0–255).
     baudrate : int
         Serial baud rate. Must match the servo's stored value.
-    travel_deg : float
-        Max degrees each servo travels from home in either direction.
+    pan_travel_deg : float
+        Max degrees the pan  servo travels left/right from home (default 150°).
+    tilt_travel_deg : float
+        Max degrees the tilt servo travels up/down  from home (default 45°).
+        Keep this small — excessive tilt can strain the camera mount.
     """
 
     def __init__(
         self,
-        port:         str,
-        pan_id:       int   = 1,
-        tilt_id:      int   = 4,
-        Kp:           float = 0.5,
-        deadband_px:  int   = 20,
-        smooth_alpha: float = 0.35,
-        cam_hfov:     float = 60.0,
-        cam_vfov:     float = 40.0,
-        speed:        int   = 1200,
-        acc:          int   = 20,
-        baudrate:     int   = 115200,
-        travel_deg:   float = 150.0,
+        port:            str,
+        pan_id:          int   = 1,
+        tilt_id:         int   = 4,
+        Kp:              float = 0.5,
+        deadband_px:     int   = 20,
+        smooth_alpha:    float = 0.35,
+        cam_hfov:        float = 60.0,
+        cam_vfov:        float = 40.0,
+        speed:           int   = 1200,
+        acc:             int   = 20,
+        baudrate:        int   = 115200,
+        pan_travel_deg:  float = 150.0,
+        tilt_travel_deg: float = 45.0,
     ) -> None:
         self.pan_id       = pan_id
         self.tilt_id      = tilt_id
@@ -136,13 +141,15 @@ class ServoTracker:
         self.cam_vfov     = cam_vfov
         self.speed        = speed
         self.acc          = acc
+        self._shaking     = False   # True during a shake sequence
 
-        # Soft travel limits centred on home positions
-        travel_steps   = int(travel_deg * STEPS_PER_DEG)
-        self._pan_min  = max(MIN_POS, PAN_HOME  - travel_steps)
-        self._pan_max  = min(MAX_POS, PAN_HOME  + travel_steps)
-        self._tilt_min = max(MIN_POS, TILT_HOME - travel_steps)
-        self._tilt_max = min(MAX_POS, TILT_HOME + travel_steps)
+        # Separate soft travel limits for pan and tilt
+        pan_steps  = int(pan_travel_deg  * STEPS_PER_DEG)
+        tilt_steps = int(tilt_travel_deg * STEPS_PER_DEG)
+        self._pan_min  = max(MIN_POS, PAN_HOME  - pan_steps)
+        self._pan_max  = min(MAX_POS, PAN_HOME  + pan_steps)
+        self._tilt_min = max(MIN_POS, TILT_HOME - tilt_steps)
+        self._tilt_max = min(MAX_POS, TILT_HOME + tilt_steps)
 
         # Cached + smoothed positions
         self._pan_pos     = PAN_HOME
@@ -192,6 +199,9 @@ class ServoTracker:
         target_cx, target_cy : pixel coordinates of the target centre.
         frame_w, frame_h     : frame dimensions in pixels.
         """
+        if self._shaking:
+            return   # don't interrupt the shake sequence
+
         frame_cx = frame_w / 2.0
         frame_cy = frame_h / 2.0
 
@@ -247,6 +257,40 @@ class ServoTracker:
         time.sleep(0.3)
         self._port_handler.closePort()
         print("[ServoTracker] Port closed.")
+
+    def shake(self, count: int = 5, amplitude_deg: float = 20.0) -> None:
+        """
+        Rapidly oscillate the pan servo left-right (67 meme response).
+
+        Parameters
+        ----------
+        count         : number of full left-right cycles  (default 5)
+        amplitude_deg : how far each swing goes in degrees (default 20°)
+        """
+        if self._shaking:
+            return   # already shaking — ignore duplicate triggers
+        self._shaking = True
+        threading.Thread(
+            target=self._shake_thread,
+            args=(count, amplitude_deg),
+            daemon=True,
+        ).start()
+
+    def _shake_thread(self, count: int, amplitude_deg: float) -> None:
+        """Run the shake oscillation in a background thread."""
+        center = self._pan_pos
+        step   = int(amplitude_deg * STEPS_PER_DEG)
+        for i in range(count * 2):
+            target = _clamp(
+                center + (step if i % 2 == 0 else -step),
+                self._pan_min, self._pan_max,
+            )
+            self._write_position(self.pan_id, target)
+            time.sleep(0.08)   # ~80 ms per position = ~12.5 Hz oscillation
+        # Snap back to centre
+        self._write_position(self.pan_id, center)
+        self._smooth_pan = float(center)
+        self._shaking    = False
 
     # ── Private helpers ────────────────────────────────────────────────────
 

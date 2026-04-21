@@ -30,8 +30,7 @@ import os
 import sys
 import threading
 import time
-from collections import deque
-from typing import Dict, Deque
+from typing import Dict
 
 import cv2
 
@@ -284,38 +283,6 @@ def check_thumbs_up(person_kps, conf_threshold: float = 0.5) -> bool:
     return False
 
 
-def check_67_gesture(history: deque, now: float,
-                     min_swings: int = 2, window: float = 1.0) -> bool:
-    """
-    Detect the rapid horizontal hand-shake (the '67 meme' motion).
-
-    Looks for ≥ min_swings direction reversals within `window` seconds.
-    Works at low FPS (Pi ~5-10 fps) by using a generous 1-second window.
-
-    Parameters
-    ----------
-    history    : deque of (timestamp, x_pixel) for the tracked wrist
-    now        : current timestamp
-    min_swings : direction reversals needed to trigger (default 2)
-    window     : look-back window in seconds (default 1.0)
-    """
-    recent = [(t, x) for t, x in history if now - t < window]
-    if len(recent) < 5:
-        return False
-
-    changes = 0
-    last_dir = 0
-    for i in range(1, len(recent)):
-        dx = recent[i][1] - recent[i - 1][1]
-        if abs(dx) < 8:          # ignore tiny jitter (< 8 px)
-            continue
-        cur_dir = 1 if dx > 0 else -1
-        if last_dir != 0 and cur_dir != last_dir:
-            changes += 1
-        last_dir = cur_dir
-
-    return changes >= min_swings
-
 
 # ──────────────────────────────────────
 # Main real-time loop
@@ -436,11 +403,6 @@ def main():
     thumbs_up_start:     Dict[int, float | None] = {}   # tid → when hold started
     thumbs_up_confirmed: Dict[int, bool]          = {}   # tid → True once held ≥1s
     _THUMBS_UP_SECS = 1.0
-
-    # ── 67 gesture state (rapid wrist oscillation → camera shake) ──
-    wrist_67_history: Dict[int, deque] = {}   # tid → deque of (ts, x_pixel)
-    _67_last_shake:   Dict[int, float] = {}   # tid → last shake timestamp
-    _67_COOLDOWN = 2.5                         # seconds between shakes per person
 
     # ── Servo target — sticky: tracks the most-recently-waving person ──
     servo_target_tid: int | None = None
@@ -661,31 +623,6 @@ def main():
                         thumbs_up_info = {"active": False, "duration": 0.0,
                                           "confirmed": False}
 
-                # ────────────────────────────
-                # 67 GESTURE DETECTION (rapid wrist shake → camera shakes)
-                # ────────────────────────────
-                if keypoints_data is not None and i < len(keypoints_data):
-                    l_wr = keypoints_data[i][KP_LEFT_WRIST]
-                    r_wr = keypoints_data[i][KP_RIGHT_WRIST]
-                    # Pick the most-confident wrist
-                    wx = None
-                    if float(l_wr[2]) > 0.4 or float(r_wr[2]) > 0.4:
-                        if float(r_wr[2]) >= float(l_wr[2]):
-                            wx = float(r_wr[0])
-                        else:
-                            wx = float(l_wr[0])
-                    if wx is not None:
-                        if tid not in wrist_67_history:
-                            wrist_67_history[tid] = deque(maxlen=30)
-                        wrist_67_history[tid].append((now, wx))
-                        if (check_67_gesture(wrist_67_history[tid], now) and
-                                tracker is not None and
-                                now - _67_last_shake.get(tid, 0) > _67_COOLDOWN):
-                            _67_last_shake[tid] = now
-                            tracker.shake()
-                            _draw_67_flash(frame, cx, cy)
-                            print(f"[GESTURE] 67 detected — Person #{tid} 🤙")
-
                 # ── Draw overlay for this person ──
                 metrics = detector.get_latest_metrics()
                 current_alert = None
@@ -767,8 +704,6 @@ def main():
             wave_confirm_times.pop(tid, None)
             thumbs_up_start.pop(tid, None)
             thumbs_up_confirmed.pop(tid, None)
-            wrist_67_history.pop(tid, None)
-            _67_last_shake.pop(tid, None)
 
         # ── Draw status bar ──
         _draw_status_bar(frame, display_fps, len(current_track_ids),
@@ -889,21 +824,6 @@ def _draw_thumbs_up_indicator(frame, x1: int, y1: int,
     cv2.putText(frame, text_ascii, (tx, ty),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
 
-
-def _draw_67_flash(frame, cx: int, cy: int):
-    """
-    Brief on-screen flash label when the 67 gesture is detected.
-    Drawn at the person's centre.
-    """
-    col  = (0, 200, 255)
-    text = "67! SHAKE"
-    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
-    tx = cx - tw // 2
-    ty = cy - 50
-    cv2.rectangle(frame, (tx - 6, ty - th - 6), (tx + tw + 6, ty + 6),
-                  (0, 0, 0), -1)
-    cv2.putText(frame, text, (tx, ty),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2, cv2.LINE_AA)
 
 
 if __name__ == "__main__":

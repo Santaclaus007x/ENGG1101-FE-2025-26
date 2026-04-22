@@ -1,0 +1,2 @@
+# Discord webhook URL — this file is gitignored and never pushed to GitHub
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1496053726169927681/a40IoSz9DUM5CxWxGrKLewUCZpW3BIXzXGlZXm9p2fU2fk7L5CVh1Mb2q8X6lHmXQVrm"

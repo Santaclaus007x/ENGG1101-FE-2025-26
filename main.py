@@ -140,8 +140,8 @@ def parse_args():
                    help="Save annotated video to this path")
     p.add_argument("--conf", type=float, default=0.4,
                    help="Detection confidence threshold (default: 0.4)")
-    p.add_argument("--imgsz", type=int, default=256,
-                   help="YOLO input resolution (lower = faster, default: 256)")
+    p.add_argument("--imgsz", type=int, default=192,
+                   help="YOLO input resolution (lower = faster, default: 192)")
     p.add_argument("--half", action="store_true",
                    help="Use FP16 half-precision inference (faster on GPU)")
     p.add_argument("--aspect-ratio", type=float, default=0.7,
@@ -255,24 +255,24 @@ def check_waving(person_kps, conf_threshold: float = 0.5) -> bool:
 
 
 def check_67_gesture(history: deque, now: float,
-                     min_swings: int = 2, window: float = 0.6) -> bool:
+                     min_swings: int = 2, window: float = 1.0) -> bool:
     """
     Detect rapid horizontal wrist oscillation (the 67 motion).
     Returns True every frame the gesture is actively happening.
-    The caller enforces a 1-second continuous hold before acting.
+    The caller enforces a hold period before acting.
 
     min_swings : direction reversals needed within the window (default 2)
-    window     : look-back window in seconds (default 0.6s)
+    window     : look-back window in seconds — wider helps at low FPS (1.0s)
     """
     recent = [(t, x) for t, x in history if now - t < window]
-    if len(recent) < 5:
+    if len(recent) < 3:
         return False
 
     changes = 0
     last_dir = 0
     for i in range(1, len(recent)):
         dx = recent[i][1] - recent[i - 1][1]
-        if abs(dx) < 8:
+        if abs(dx) < 5:        # lowered from 8px → 5px, less strict jitter filter
             continue
         cur_dir = 1 if dx > 0 else -1
         if last_dir != 0 and cur_dir != last_dir:
@@ -440,7 +440,7 @@ def main():
     wrist_67_history:  Dict[int, deque]      = {}   # tid → deque of (ts, x_pixel)
     _67_gesture_start: Dict[int, float|None] = {}   # tid → when continuous hold began
     _67_last_shake:    Dict[int, float]      = {}   # tid → last shake timestamp
-    _67_HOLD_SECS = 1.0    # must sustain the motion for this long
+    _67_HOLD_SECS = 0.5    # must sustain the motion for this long
     _67_COOLDOWN  = 3.0    # seconds before same person can trigger again
 
     # ── Servo target — sticky: tracks the most-recently-waving person ──

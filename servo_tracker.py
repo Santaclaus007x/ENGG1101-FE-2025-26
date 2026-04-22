@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import os
 import sys
-import threading
 import time
 from typing import Tuple
 
@@ -253,27 +252,6 @@ class ServoTracker:
         time.sleep(0.3)
         self._port_handler.closePort()
         print("[ServoTracker] Port closed.")
-
-    def shake(self, count: int = 5, amplitude_deg: float = 20.0) -> None:
-        """Rapidly oscillate pan servo left-right (67 gesture response)."""
-        threading.Thread(
-            target=self._shake_thread,
-            args=(count, amplitude_deg),
-            daemon=True,
-        ).start()
-
-    def _shake_thread(self, count: int, amplitude_deg: float) -> None:
-        center = self._pan_pos
-        step   = int(amplitude_deg * STEPS_PER_DEG)
-        for i in range(count * 2):
-            target = _clamp(
-                center + (step if i % 2 == 0 else -step),
-                self._pan_min, self._pan_max,
-            )
-            self._write_position(self.pan_id, target)
-            time.sleep(0.08)
-        self._write_position(self.pan_id, center)
-        self._smooth_pan = float(center)
 
     # ── Private helpers ────────────────────────────────────────────────────
 

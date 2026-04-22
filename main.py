@@ -222,6 +222,36 @@ def compute_torso_angle(person_kps, conf_threshold: float = 0.4):
     return angle, (mid_hp_x, mid_hp_y), (mid_sh_x, mid_sh_y)
 
 
+def pose_tracking_anchor(person_kps, conf_threshold: float = 0.4):
+    """
+    Return (cx, cy) — anchor midway between mid-shoulder and mid-hip.
+
+    This point is the centre of the torso, anatomically stable regardless of
+    posture (standing, squatting, bending).  Using it instead of the bounding
+    box centre prevents the camera from drifting to the lower body when a
+    person squats and then stands back up (the bbox reshapes but the torso
+    midpoint stays on the same spot on the body).
+
+    Returns None if any of the four required keypoints lack confidence.
+    """
+    l_sh = person_kps[KP_LEFT_SHOULDER]
+    r_sh = person_kps[KP_RIGHT_SHOULDER]
+    l_hp = person_kps[KP_LEFT_HIP]
+    r_hp = person_kps[KP_RIGHT_HIP]
+
+    if not all(float(kp[2]) > conf_threshold for kp in [l_sh, r_sh, l_hp, r_hp]):
+        return None
+
+    mid_sh_x = (float(l_sh[0]) + float(r_sh[0])) / 2
+    mid_sh_y = (float(l_sh[1]) + float(r_sh[1])) / 2
+    mid_hp_x = (float(l_hp[0]) + float(r_hp[0])) / 2
+    mid_hp_y = (float(l_hp[1]) + float(r_hp[1])) / 2
+
+    cx = int((mid_sh_x + mid_hp_x) / 2)
+    cy = int((mid_sh_y + mid_hp_y) / 2)
+    return cx, cy
+
+
 def check_waving(person_kps, conf_threshold: float = 0.5) -> bool:
     """
     Check if a person is raising either wrist above the corresponding shoulder.
@@ -521,8 +551,16 @@ def main():
                     continue
 
                 # ── Record centre position for servo target lookup ──
+                # Default: bounding-box centre (fallback if pose keypoints fail)
                 cx = (box[0] + box[2]) // 2
                 cy = (box[1] + box[3]) // 2
+                # Preferred: torso midpoint between shoulders and hips.
+                # Stable across squat/stand transitions, so the camera
+                # doesn't stay stuck on the lower body after someone stands up.
+                if keypoints_data is not None and i < len(keypoints_data):
+                    anchor = pose_tracking_anchor(keypoints_data[i])
+                    if anchor is not None:
+                        cx, cy = anchor
                 person_positions[tid] = (cx, cy)
 
                 # ────────────────────────────

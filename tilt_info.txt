@@ -1,0 +1,40 @@
+VERTICAL (TILT) SERVO — CALIBRATION INFO
+=========================================
+
+Servo ID        : 4
+Protocol        : STS3215 (sms_sts)
+Steps per degree: 11.377  (4096 steps / 360°)
+
+HOME POSITION (camera faces straight ahead)
+--------------------------------------------
+  Steps         : 1768
+  Angle         : 155.39° from servo zero
+
+TRAVEL LIMITS
+--------------
+  Max up/down   : ±45° from home  (90° total vertical sweep)
+  Upper limit   : 1768 - (45 × 11.38) = 1768 - 512 =  1256 steps
+  Lower limit   : 1768 + (45 × 11.38) = 1768 + 512 =  2280 steps
+
+CALIBRATION HISTORY
+--------------------
+  Original home : 2050 steps  (180.21°)
+  Adjusted      : moved anti-clockwise in 5° increments
+  Final home    : 1768 steps  (155.39°)
+  Total moved   : 282 steps = 24.79° anti-clockwise
+
+HOW TO ADJUST
+--------------
+  Move 5° anti-clockwise:
+      python tilt_adjust.py
+
+  Move with custom port:
+      python tilt_adjust.py --port /dev/ttyUSB1 --tilt-id 4
+
+  After adjusting, update TILT_HOME in servo_tracker.py:
+      TILT_HOME = <new steps value from script output>
+
+OVERRIDE AT RUNTIME
+---------------------
+  python main.py --tilt-travel 30   # tighter limit (30° up/down)
+  python main.py --tilt-travel 60   # wider  limit (60° up/down)

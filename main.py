@@ -224,32 +224,48 @@ def compute_torso_angle(person_kps, conf_threshold: float = 0.4):
 
 def pose_tracking_anchor(person_kps, conf_threshold: float = 0.4):
     """
-    Return (cx, cy) — anchor midway between mid-shoulder and mid-hip.
+    Return (cx, cy) — upper-torso anchor weighted toward the shoulders.
 
-    This point is the centre of the torso, anatomically stable regardless of
-    posture (standing, squatting, bending).  Using it instead of the bounding
-    box centre prevents the camera from drifting to the lower body when a
-    person squats and then stands back up (the bbox reshapes but the torso
-    midpoint stays on the same spot on the body).
+    Strategy (picks the first that has enough confident keypoints):
+      1. Both shoulders + both hips → 70 % mid-shoulder + 30 % mid-hip
+         (upper chest, near the face, still anatomically central)
+      2. Both shoulders alone       → mid-shoulder (top of torso)
+      3. Return None                → caller falls back to bbox centre
 
-    Returns None if any of the four required keypoints lack confidence.
+    Why shoulder-weighted?  When a person squats or bends, pose models can
+    mis-place the hip keypoints at knee level.  Weighting toward shoulders
+    keeps the anchor on the upper body regardless of posture.
     """
     l_sh = person_kps[KP_LEFT_SHOULDER]
     r_sh = person_kps[KP_RIGHT_SHOULDER]
     l_hp = person_kps[KP_LEFT_HIP]
     r_hp = person_kps[KP_RIGHT_HIP]
 
-    if not all(float(kp[2]) > conf_threshold for kp in [l_sh, r_sh, l_hp, r_hp]):
+    sh_ok = (float(l_sh[2]) > conf_threshold and
+             float(r_sh[2]) > conf_threshold)
+    hp_ok = (float(l_hp[2]) > conf_threshold and
+             float(r_hp[2]) > conf_threshold)
+
+    if not sh_ok:
         return None
 
     mid_sh_x = (float(l_sh[0]) + float(r_sh[0])) / 2
     mid_sh_y = (float(l_sh[1]) + float(r_sh[1])) / 2
-    mid_hp_x = (float(l_hp[0]) + float(r_hp[0])) / 2
-    mid_hp_y = (float(l_hp[1]) + float(r_hp[1])) / 2
 
-    cx = int((mid_sh_x + mid_hp_x) / 2)
-    cy = int((mid_sh_y + mid_hp_y) / 2)
-    return cx, cy
+    if hp_ok:
+        mid_hp_x = (float(l_hp[0]) + float(r_hp[0])) / 2
+        mid_hp_y = (float(l_hp[1]) + float(r_hp[1])) / 2
+
+        # Sanity check: reject hip detections that are above the shoulders
+        # (pose model confusion during squat / strange pose).  Only accept
+        # hips if they sit meaningfully below the shoulders.
+        if mid_hp_y > mid_sh_y + 10:
+            cx = int(0.70 * mid_sh_x + 0.30 * mid_hp_x)
+            cy = int(0.70 * mid_sh_y + 0.30 * mid_hp_y)
+            return cx, cy
+
+    # Fallback: shoulders only
+    return int(mid_sh_x), int(mid_sh_y)
 
 
 def check_waving(person_kps, conf_threshold: float = 0.5) -> bool:
@@ -683,6 +699,11 @@ def main():
                     _draw_thumbs_up_indicator(frame, x1, y1,
                                               thumbs_up_info["duration"],
                                               thumbs_up_info["confirmed"])
+
+                # ── Anchor dot — visible on every person so you can see
+                #    where the servo "would" aim if this was the target ──
+                cv2.circle(frame, (cx, cy), 5, (0, 255, 0), -1, cv2.LINE_AA)
+                cv2.circle(frame, (cx, cy), 6, (0, 0, 0), 1, cv2.LINE_AA)
 
                 # ── Servo target marker ──
                 if tid == servo_target_tid:

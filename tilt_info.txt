@@ -1,4 +1,4 @@
-TILT-SERVO CALIBRATION INFO
+"""TILT-SERVO CALIBRATION INFO
 ============================
 
 Servo ID        : 4
@@ -7,21 +7,21 @@ Steps per degree: 11.377  (4096 steps / 360 deg)
 
 HOME POSITION (camera faces straight ahead)
 --------------------------------------------
-  Steps         : 1768
-  Angle         : 155.39 deg from servo zero
+  Steps         : 1383
+  Angle         : 121.55 deg from servo zero
 
 TRAVEL LIMITS
 --------------
   Max up/down   : +/- 45 deg from home  (90 deg total vertical sweep)
-  Upper limit   : 1768 - (45 x 11.38) = 1768 - 512 =  1256 steps
-  Lower limit   : 1768 + (45 x 11.38) = 1768 + 512 =  2280 steps
+  Upper limit   : 1383 - (45 x 11.38) = 1383 - 512 =   871 steps
+  Lower limit   : 1383 + (45 x 11.38) = 1383 + 512 =  1895 steps
 
 CALIBRATION HISTORY
 --------------------
   Original home : 2050 steps  (180.21 deg)
   Adjusted      : moved anti-clockwise in 5 deg increments
-  Final home    : 1768 steps  (155.39 deg)
-  Total moved   : 282 steps = 24.79 deg anti-clockwise
+  Final home    : 1383 steps  (121.55 deg)
+  Total moved   : 667 steps = 58.63 deg anti-clockwise
 
 HOW TO ADJUST
 --------------
@@ -38,3 +38,4 @@ OVERRIDE AT RUNTIME
 ---------------------
   python main.py --tilt-travel 30   # tighter limit (30 deg up/down)
   python main.py --tilt-travel 60   # wider  limit (60 deg up/down)
+"""

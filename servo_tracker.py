@@ -73,7 +73,7 @@ MIN_POS    = 0
 MAX_POS    = 4095
 CENTER_POS = 2048
 PAN_HOME   = 2374   # calibrated "camera faces forward" for pan
-TILT_HOME  = 1768   # calibrated "camera faces forward" for tilt (155.39° from servo zero)
+TILT_HOME  = 1383   # calibrated "camera faces forward" for tilt (121.55° from servo zero)
 
 # STS3215: 4096 steps / 360° = 11.377… steps per degree
 STEPS_PER_DEG: float = 4096.0 / 360.0

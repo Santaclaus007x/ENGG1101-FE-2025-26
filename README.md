@@ -10,15 +10,45 @@ Runs on a Raspberry Pi 5 with a webcam and two STS3215 servos.
 
 ---
 
-## Quick start
+## Running on the Pi (everything already set up)
+
+If the project is already on the Pi at `~/yolo_project/ENGG1101-FE-2025-26`,
+just do this every time:
+
+```bash
+cd ~/yolo_project/ENGG1101-FE-2025-26     # 1. go to the project folder
+source .venv/bin/activate                 # 2. turn on the virtual environment
+git pull                                  # 3. grab the latest code
+python main.py                            # 4. run it
+```
+
+When you're done, press **q** in the video window to quit, then:
+```bash
+deactivate                                # leave the virtual environment
+```
+
+> Tip: if `git pull` complains about "local changes would be overwritten",
+> run `git checkout -- .` to discard your local edits, then `git pull` again.
+
+---
+
+## First-time setup (only once per machine)
 
 ### 1. Clone the repo
 ```bash
+mkdir -p ~/yolo_project
+cd ~/yolo_project
 git clone https://github.com/Santaclaus007x/ENGG1101-FE-2025-26.git
 cd ENGG1101-FE-2025-26
 ```
 
-### 2. Install Python packages
+### 2. Create a virtual environment
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install Python packages
 ```bash
 pip install -r requirements.txt
 ```
@@ -29,17 +59,17 @@ sudo apt install swig liblgpio-dev
 pip install lgpio
 ```
 
-### 3. Plug in the hardware
+### 4. Plug in the hardware
 - USB webcam → any Pi USB port
 - Servo driver board → Pi USB port (shows up as `/dev/ttyUSB0`)
 - Buzzer → Pi GPIO pin 17 (+) and GND (−)
 
-### 4. Run it
+### 5. Run it
 ```bash
 python main.py
 ```
 
-That's it. A window pops up showing the live feed. Press **q** to quit.
+A window pops up showing the live feed. Press **q** to quit.
 
 ---
 

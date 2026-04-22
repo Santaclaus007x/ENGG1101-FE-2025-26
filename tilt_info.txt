@@ -1,4 +1,4 @@
-VERTICAL (TILT) SERVO — CALIBRATION INFO
+VERTICAL (TILT) SERVO - CALIBRATION INFO
 =========================================
 
 Servo ID        : 4

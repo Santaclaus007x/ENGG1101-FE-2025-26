@@ -30,6 +30,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from typing import Dict
 
 import cv2
@@ -253,6 +254,34 @@ def check_waving(person_kps, conf_threshold: float = 0.5) -> bool:
     return False
 
 
+def check_67_gesture(history: deque, now: float,
+                     min_swings: int = 2, window: float = 0.6) -> bool:
+    """
+    Detect rapid horizontal wrist oscillation (the 67 motion).
+    Returns True every frame the gesture is actively happening.
+    The caller enforces a 1-second continuous hold before acting.
+
+    min_swings : direction reversals needed within the window (default 2)
+    window     : look-back window in seconds (default 0.6s)
+    """
+    recent = [(t, x) for t, x in history if now - t < window]
+    if len(recent) < 5:
+        return False
+
+    changes = 0
+    last_dir = 0
+    for i in range(1, len(recent)):
+        dx = recent[i][1] - recent[i - 1][1]
+        if abs(dx) < 8:
+            continue
+        cur_dir = 1 if dx > 0 else -1
+        if last_dir != 0 and cur_dir != last_dir:
+            changes += 1
+        last_dir = cur_dir
+
+    return changes >= min_swings
+
+
 def check_thumbs_up(person_kps, conf_threshold: float = 0.5) -> bool:
     """
     Detect a thumbs-up: wrist raised above the shoulder with the arm
@@ -406,6 +435,13 @@ def main():
     thumbs_up_start:     Dict[int, float | None] = {}   # tid → when hold started
     thumbs_up_confirmed: Dict[int, bool]          = {}   # tid → True once held ≥1s
     _THUMBS_UP_SECS = 1.0
+
+    # ── 67 gesture state (must hold gesture for 1s before shake fires) ──
+    wrist_67_history:  Dict[int, deque]      = {}   # tid → deque of (ts, x_pixel)
+    _67_gesture_start: Dict[int, float|None] = {}   # tid → when continuous hold began
+    _67_last_shake:    Dict[int, float]      = {}   # tid → last shake timestamp
+    _67_HOLD_SECS = 1.0    # must sustain the motion for this long
+    _67_COOLDOWN  = 3.0    # seconds before same person can trigger again
 
     # ── Servo target — sticky: tracks the most-recently-waving person ──
     servo_target_tid: int | None = None
@@ -626,6 +662,42 @@ def main():
                         thumbs_up_info = {"active": False, "duration": 0.0,
                                           "confirmed": False}
 
+                # ────────────────────────────
+                # 67 GESTURE (hold rapid wrist shake for 1s → camera shakes)
+                # ────────────────────────────
+                if keypoints_data is not None and i < len(keypoints_data):
+                    l_wr = keypoints_data[i][KP_LEFT_WRIST]
+                    r_wr = keypoints_data[i][KP_RIGHT_WRIST]
+                    wx = None
+                    if float(l_wr[2]) > 0.4 or float(r_wr[2]) > 0.4:
+                        wx = (float(r_wr[0]) if float(r_wr[2]) >= float(l_wr[2])
+                              else float(l_wr[0]))
+                    if wx is not None:
+                        if tid not in wrist_67_history:
+                            wrist_67_history[tid] = deque(maxlen=40)
+                        wrist_67_history[tid].append((now, wx))
+
+                        is_67_now = check_67_gesture(wrist_67_history[tid], now)
+                        if is_67_now:
+                            if _67_gesture_start.get(tid) is None:
+                                _67_gesture_start[tid] = now   # start timer
+                            hold_dur = now - _67_gesture_start[tid]
+                            # Only fire once the gesture is held for 1 second
+                            if (hold_dur >= _67_HOLD_SECS and
+                                    tracker is not None and
+                                    now - _67_last_shake.get(tid, 0) > _67_COOLDOWN):
+                                _67_last_shake[tid]    = now
+                                _67_gesture_start[tid] = None   # reset hold
+                                tracker.shake()
+                                _draw_67_flash(frame, cx, cy)
+                                print(f"[GESTURE] 67 — Person #{tid} 🤙")
+                            else:
+                                # Show progress bar while building up
+                                _draw_67_progress(frame, cx, cy,
+                                                  hold_dur, _67_HOLD_SECS)
+                        else:
+                            _67_gesture_start[tid] = None   # gesture broke — reset
+
                 # ── Draw overlay for this person ──
                 metrics = detector.get_latest_metrics()
                 current_alert = None
@@ -707,6 +779,9 @@ def main():
             wave_confirm_times.pop(tid, None)
             thumbs_up_start.pop(tid, None)
             thumbs_up_confirmed.pop(tid, None)
+            wrist_67_history.pop(tid, None)
+            _67_gesture_start.pop(tid, None)
+            _67_last_shake.pop(tid, None)
 
         # ── Draw status bar ──
         _draw_status_bar(frame, display_fps, len(current_track_ids),
@@ -827,6 +902,34 @@ def _draw_thumbs_up_indicator(frame, x1: int, y1: int,
     cv2.putText(frame, text_ascii, (tx, ty),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
 
+
+
+def _draw_67_progress(frame, cx: int, cy: int,
+                      hold_dur: float, hold_req: float):
+    """Small progress bar above the person while building up to the 67 trigger."""
+    bar_w  = 80
+    bar_h  = 10
+    filled = int(bar_w * min(hold_dur / hold_req, 1.0))
+    bx = cx - bar_w // 2
+    by = cy - 65
+    cv2.rectangle(frame, (bx, by), (bx + bar_w, by + bar_h), (50, 50, 50), -1)
+    cv2.rectangle(frame, (bx, by), (bx + filled, by + bar_h), (0, 200, 255), -1)
+    cv2.rectangle(frame, (bx, by), (bx + bar_w, by + bar_h), (0, 200, 255), 1)
+    cv2.putText(frame, "67...", (bx, by - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1, cv2.LINE_AA)
+
+
+def _draw_67_flash(frame, cx: int, cy: int):
+    """Flash label when the 67 gesture fires."""
+    col  = (0, 200, 255)
+    text = "67! SHAKE"
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+    tx = cx - tw // 2
+    ty = cy - 50
+    cv2.rectangle(frame, (tx - 6, ty - th - 6), (tx + tw + 6, ty + 6),
+                  (0, 0, 0), -1)
+    cv2.putText(frame, text, (tx, ty),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2, cv2.LINE_AA)
 
 
 if __name__ == "__main__":

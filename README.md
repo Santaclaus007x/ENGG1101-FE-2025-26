@@ -80,7 +80,7 @@ A window pops up showing the live feed. Press **q** to quit.
 | `python main.py` | Normal run (everything on) |
 | `python main.py --no-servo` | PC test — no servos connected |
 | `python main.py --no-buzzer` | PC test — no buzzer |
-| `python main.py --show-env` | Show the 17-point skeleton overlay (for the demo/poster) |
+| `python main.py --show-env` | Show the 17-point skeleton overlay |
 | `python main.py --source 1` | Use a different webcam index |
 | `python main.py --output demo.mp4` | Save the session to a video file |
 

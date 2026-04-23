@@ -50,23 +50,27 @@ class DiscordNotifier:
 
         ts = time.strftime("%d %b %Y  %H:%M:%S")
 
-        # Encode frame now on main thread before it gets overwritten
-        jpeg_bytes = None
-        if frame is not None:
-            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if ok:
-                jpeg_bytes = buf.tobytes()
+        # Copy the frame immediately (cheap) then encode in the background thread
+        # so the detection loop is never blocked by JPEG compression.
+        frame_copy = frame.copy() if frame is not None else None
 
         t = threading.Thread(
             target=self._send,
-            args=(person_id, ts, jpeg_bytes),
+            args=(person_id, ts, frame_copy),
             daemon=True,
         )
         t.start()
 
     # ── Internal ───────────────────────────────────────────────────────────
 
-    def _send(self, person_id: int, ts: str, jpeg_bytes: bytes | None) -> None:
+    def _send(self, person_id: int, ts: str, frame=None) -> None:
+        # Encode here — runs in background thread, never blocks detection loop
+        jpeg_bytes = None
+        if frame is not None:
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                jpeg_bytes = buf.tobytes()
+
         embed = {
             "title": "🚨 FALL DETECTED",
             "color": 0xFF0000,   # red

@@ -46,6 +46,19 @@ except ImportError:
 # Custom ByteTrack config — lives next to this file
 _BYTETRACK_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bytetrack.yaml")
 
+# Display window name (shared between cv2.imshow and the mouse callback)
+WINDOW_NAME = "Fall + Wave Detection - ENGG1101"
+
+# Pending mouse click — set by the callback, consumed once per frame.
+# Using a dict so the callback (which can't see main()'s locals) can mutate it.
+_click_state: dict = {"pending": None}   # (x, y) or None
+
+
+def _on_mouse(event, x, y, flags, param):
+    """Left-click selects which person the servo tracks."""
+    if event == cv2.EVENT_LBUTTONDOWN:
+        _click_state["pending"] = (x, y)
+
 from fall_detector import FallDetector, FallDetectorConfig, FallAlert
 from visualizer import draw_fall_overlay, draw_env_object
 from buzzer import Buzzer
@@ -469,11 +482,17 @@ def main():
     fps_timer = time.time()
     display_fps = 0.0
 
+    # ── Register mouse callback for click-to-track ──
+    if not args.no_show:
+        cv2.namedWindow(WINDOW_NAME)
+        cv2.setMouseCallback(WINDOW_NAME, _on_mouse)
+
     print()
     print("=" * 55)
     print("  FALL + WAVE DETECTION RUNNING — press 'q' to quit")
     print(f"  Fall:  H/W ratio < {args.aspect_ratio}  +  torso > {args.torso_angle:.0f}°")
     print(f"  Wave:  Wrist above shoulder for {wave_threshold:.0f}s")
+    print(f"  Click: Left-click a person's box to start tracking them")
     print(f"  Infer: imgsz={args.imgsz}  half={args.half}")
     print("=" * 55)
     print()
@@ -543,6 +562,7 @@ def main():
         any_fall_active = False
         any_wave_active = False
         person_positions: Dict[int, tuple] = {}   # tid → (cx, cy) this frame
+        person_boxes:     Dict[int, tuple] = {}   # tid → (x1, y1, x2, y2) for click hit-test
 
         if has_boxes and has_ids:
             boxes = result.boxes.xyxy.cpu().numpy().astype(int)   # (N, 4)
@@ -578,6 +598,8 @@ def main():
                     if anchor is not None:
                         cx, cy = anchor
                 person_positions[tid] = (cx, cy)
+                person_boxes[tid]     = (int(box[0]), int(box[1]),
+                                         int(box[2]), int(box[3]))
 
                 # ────────────────────────────
                 # FALL DETECTION (bounding box for PERSON)
@@ -709,6 +731,39 @@ def main():
                 if tid == servo_target_tid:
                     _draw_servo_target(frame, cx, cy)
 
+        # ── Click-to-track: pick the person whose box contains the click ──
+        # Works for ANY number of people in frame.  When several boxes overlap
+        # at the click point, pick the SMALLEST one — that's almost always the
+        # person in front (closer / foreground), not the larger background one.
+        click = _click_state["pending"]
+        if click is not None:
+            _click_state["pending"] = None
+            click_x, click_y = click
+
+            # Collect every box that contains the click, then pick smallest area
+            hits = []
+            for tid, (x1, y1, x2, y2) in person_boxes.items():
+                if x1 <= click_x <= x2 and y1 <= click_y <= y2:
+                    area = max(1, (x2 - x1) * (y2 - y1))
+                    hits.append((area, tid))
+
+            if hits:
+                hits.sort()                     # smallest area first
+                hit_tid = hits[0][1]
+                servo_target_tid       = hit_tid
+                servo_target_wave_time = now
+                servo_target_lost_time = None
+                if len(hits) > 1:
+                    print(f"[CLICK] Tracking Person #{hit_tid}  "
+                          f"(picked smallest of {len(hits)} overlapping boxes "
+                          f"at {click_x},{click_y})")
+                else:
+                    print(f"[CLICK] Tracking Person #{hit_tid} "
+                          f"(clicked at {click_x},{click_y})")
+            else:
+                print(f"[CLICK] No person at ({click_x},{click_y}) — "
+                      f"{len(person_boxes)} people on screen")
+
         # ── Servo: occlusion-robust sticky tracking ──────────────────────
         if tracker:
             if servo_target_tid is not None and servo_target_tid not in current_track_ids:
@@ -777,7 +832,7 @@ def main():
             writer.write(frame)
 
         if not args.no_show:
-            cv2.imshow("Fall + Wave Detection - ENGG1101", frame)
+            cv2.imshow(WINDOW_NAME, frame)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q") or key == 27:
                 print("[INFO] Quit requested.")

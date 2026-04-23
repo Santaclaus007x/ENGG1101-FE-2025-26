@@ -1,4 +1,4 @@
-"""# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 #  ENGG1101 Fall + Wave Detection System — HKU
 #  Python 3.9+
 #
@@ -27,4 +27,3 @@ pyserial>=3.5             # serial port for scservo_sdk
 #     pip install gpiozero
 #     sudo apt install swig liblgpio-dev && pip install lgpio
 # Not required on Windows (buzzer is automatically disabled).
-"""
